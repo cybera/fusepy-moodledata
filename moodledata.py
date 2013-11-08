@@ -13,7 +13,7 @@ from fuse import FUSE, FuseOSError, Operations, LoggingMixIn
 if not hasattr(__builtins__, 'bytes'):
 	bytes = str
 
-class Memory(LoggingMixIn, Operations):
+class Moodledata(LoggingMixIn, Operations):
 	'Example memory filesystem. Supports only one level of files.'
 
 	def __init__(self):
@@ -133,4 +133,4 @@ if __name__ == '__main__':
 		exit(1)
 
 	logging.getLogger().setLevel(logging.DEBUG)
-	fuse = FUSE(Memory(), argv[1], foreground=True)
+	fuse = FUSE(Moodledata(), argv[1], foreground=True)
