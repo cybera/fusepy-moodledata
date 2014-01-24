@@ -10,9 +10,10 @@ from fuse import FuseOSError, Operations, LoggingMixIn
 
 
 class Moodledata(LoggingMixIn, Operations):
-    def __init__(self, root):
-        self.root = realpath(root)
+    def __init__(self, config):
+        self.root = realpath(config["cache_dir"])
         self.rwlock = Lock()
+        self.config = config
 
     def __call__(self, op, path, *args):
         return super(Moodledata, self).__call__(op, self.root + path, *args)
