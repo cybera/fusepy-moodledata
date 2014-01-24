@@ -27,6 +27,7 @@ import pyrax, os
 
 # i.e. "/"
 MOUNT_CONTAINER = 'swift-fuse'
+CACHE_LOCATION = '/tmp/swift-fuse'
 
 
 class SwiftFuse(LoggingMixIn, Operations):
@@ -56,6 +57,7 @@ class SwiftFuse(LoggingMixIn, Operations):
 		self.swift_mount = self.swift_client.get_container(MOUNT_CONTAINER)
 
 	def getattr(self, path, fh=None):
+		print "calling getattr"
 		"""
 		http://sourceforge.net/apps/mediawiki/fuse/index.php?
 			title=Getattr%28%29
@@ -66,9 +68,11 @@ class SwiftFuse(LoggingMixIn, Operations):
 			st['st_nlink'] = 2  # . and .. at a minimum
 		else:
 			try:
+				print "checking"
 				obj = self.swift_mount.get_object(path.lstrip('/'))
+				print "done checking"
 				st['st_size'] = obj.total_bytes
-			except pyrax.exceptions.NoSuchObject:
+			except pyrax.exc.NoSuchObject:
 				st['st_size'] = 0
 
 			st['st_mode'] = stat.S_IFREG | 0666
@@ -77,25 +81,49 @@ class SwiftFuse(LoggingMixIn, Operations):
 		st['st_ctime'] = time()
 		st['st_mtime'] = st['st_ctime']
 		st['st_atime'] = st['st_ctime']
+		print "attr:"
+		print st
 		return st
 
 	def readdir(self, path, fh):
-		headers, objects = self.old_swift_client.get_container(MOUNT_CONTAINER)
+		print "calling readdir"
+		objects = self.swift_mount.get_object_names()
 		contents = ['.', '..']
 		for obj in objects:
-			contents.append(obj['name'].split('/')[0].rstrip('/'))
+			contents.append(obj.split('/')[0].rstrip('/'))
 		return contents
 
+	def open(self, path, flags):
+		print "open: %s" % path
+		full_path = "%s/%s" % (CACHE_LOCATION, path.lstrip('/'))
+		if not os.path.isfile(full_path) and (flags & os.O_WRONLY) == 0:
+			try:
+				obj = self.swift_mount.get_object(path.lstrip('/'))
+				with open(full_path, 'w') as cache_file:
+					cache_file.write(obj.fetch())
+			except pyrax.exc.NoSuchObject:
+				pass
+		print "about to open: %s" % full_path
+
+		fh = os.open(full_path, flags)
+	
+		print "open fh: %s" % fh
+
+		return fh
+
+	def access(self, path, mode):
+		print "calling access"
+		if not os.access(path, mode):
+			raise FuseOSError(EACCES)
+
 	def create(self, path, mode):
-		try:
-			print "in create: %s" % path
-			self.old_swift_client.put_object(MOUNT_CONTAINER, path.lstrip('/'),
-										 None)
-		except swift.ClientException as e:
-			raise
-		return 0
+		print "calling create"
+		full_path = "%s/%s" % (CACHE_LOCATION, path.lstrip('/'))
+		print "create: %s" % path
+		return os.open(full_path, os.O_WRONLY | os.O_CREAT, mode)
 
 	def read(self, path, size, offset, fh):
+		print "calling read: %s" % fh
 		# TODO:
 		# if it exists in cache location:
 		# 	read from cache location as regular file
@@ -106,10 +134,30 @@ class SwiftFuse(LoggingMixIn, Operations):
 		#		return the data
 		#	else
 		#		wait
-		obj = self.swift_mount.get_object(path.lstrip('/'))
-		return obj.fetch()
+		full_path = "%s/%s" % (CACHE_LOCATION, path.lstrip('/'))
+		# if not os.path.isfile(full_path):
+		# 	try:
+		# 		obj = self.swift_mount.get_object(path.lstrip('/'))
+		# 		with open(full_path, 'w') as cache_file:
+		# 			cache_file.write(obj.fetch())
+		# 	except pyrax.exc.NoSuchObject:
+		# 		pass
+
+		# if fh == 0:
+		# 	fh = os.open(full_path, os.O_RDONLY)
+		# 	print "fh: %s" % fh
+
+		os.lseek(fh, offset, os.SEEK_SET)
+		return os.read(fh, size)
+
+	def release(self, path, fh):
+		print "calling release: %s" % fh
+
+		return os.close(fh)
 
 	def mkdir(self, path, mode):
+		print "calling mkdir"
+
 		# use trailing slash to indicate a dir
 		path = path.lstrip('/').rstrip('/') + '/'
 		headers, body = self.old_swift_client.put_object(
@@ -117,32 +165,58 @@ class SwiftFuse(LoggingMixIn, Operations):
 		return 0
 
 	def statfs(self, path):
+		print "calling statfs"
+
 		return dict(f_bsize=512, f_blocks=4096, f_bavail=2097152)
 
 	def chmod(self, path, mode):
+		print "calling chmod"
+
 		return 0                # FIXME not really!
 		return -errno.ENOSYS
 
 	def chown(self, path, uid, gid):
+		print "calling chown"
+
 		return 0                # FIXME not really!
 		return -errno.ENOSYS
 
 	def write(self, path, data, offset, fh):
-		# TODO:
-		# write to cache location
-		# check for EOF in data
-		# when EOF, sync to SWIFT
-		# also sync to SWIFT when fsync() called
-		self.swift_mount.store_object(path.lstrip('/'), data)
-		return len(data)
+		print "calling write"
+
+		os.lseek(fh, offset, os.SEEK_SET)
+		bytes_written = os.write(fh, data)
+
+		# self.swift_mount.store_object(path.lstrip('/'), data)
+		return bytes_written
+	def flush(self, path, fh):
+		print "calling flush: %s" % fh
+
+		os.fsync(fh)
+		# cached_path = "%s/%s" % (CACHE_LOCATION, path.lstrip('/'))
+		# self.swift_mount.upload_file(path.lstrip('/'), cached_path)
+
+	def fsync(self, path, datasync, fh):
+		print "calling fsync: %s (%s)" % (path, fh)
+		# cached_path = "%s/%s" % (CACHE_LOCATION, path.lstrip('/'))
+		# self.swift_mount.upload_file(path.lstrip('/'), cached_path)
+		return os.fsync(fh)
 
 	def rename(self, old, new):
+		print "calling rename"
+
 		return 0
 	def rmdir(self, path):
+		print "calling rmdir"
+
 		return 0
 	def truncate(self, path, length, fh=None):
+		print "calling truncate"
+
 		return 0
 	def utimens(self, path, times=None):
+		print "calling utimens"
+
 		return 0
 
 
