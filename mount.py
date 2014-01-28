@@ -11,5 +11,4 @@ if __name__ == '__main__':
         md_config = Config(argv[1])
     else:
         md_config = Config()
-
     fuse = FUSE(Moodledata(md_config), md_config["mount_dir"], foreground=True)

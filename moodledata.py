@@ -2,88 +2,94 @@ from __future__ import with_statement
 
 from errno import EACCES
 from os.path import realpath
-from threading import Lock
 
 import os
 
 from fuse import FuseOSError, Operations, LoggingMixIn
+from file_system import FileSystem
 
 
 class Moodledata(LoggingMixIn, Operations):
-    def __init__(self, config):
-        self.root = realpath(config["cache_dir"])
-        self.rwlock = Lock()
-        self.config = config
+	def __init__(self, config):
+		self.cache_dir = realpath(config["cache_dir"])
+		self.config = config
+		self.file_system = FileSystem(self.cache_dir)
 
-    def __call__(self, op, path, *args):
-        return super(Moodledata, self).__call__(op, self.root + path, *args)
+	def access(self, path, mode):
+		return self.get_file(path).access(mode)
 
-    def access(self, path, mode):
-        if not os.access(path, mode):
-            raise FuseOSError(EACCES)
+	def chmod(self, path, mode):
+		return self.get_file(path).chmod(mode)
 
-    chmod = os.chmod
-    chown = os.chown
+	def chown(self, path, uid, gid):
+		return self.get_file(path).chown(uid, gid)
 
-    def create(self, path, mode):
-        return os.open(path, os.O_WRONLY | os.O_CREAT, mode)
+	def create(self, path, mode):
+		return self.get_file(path).create(mode)
 
-    def flush(self, path, fh):
-        return os.fsync(fh)
+	def flush(self, path, fh):
+		return self.get_file(path).flush(fh)
 
-    def fsync(self, path, datasync, fh):
-        return os.fsync(fh)
+	def fsync(self, path, datasync, fh):
+		return self.get_file(path).fsync(datasync, fh)
 
-    def getattr(self, path, fh=None):
-        st = os.lstat(path)
-        return dict((key, getattr(st, key)) for key in ('st_atime', 'st_ctime',
-            'st_gid', 'st_mode', 'st_mtime', 'st_nlink', 'st_size', 'st_uid'))
+	def getattr(self, path, fh=None):
+		return self.get_file(path).getattr(fh)
 
-    getxattr = None
+	def getxattr(self, path, name, position=0):
+		return self.get_file(path).getxattr(name, position)
+	
+	def link(self, path, source):
+		return self.get_file(path).link(source)
 
-    def link(self, target, source):
-        return os.link(source, target)
+	def listxattr(self, path):
+		return self.get_file(path).listxattr()
 
-    listxattr = None
-    mkdir = os.mkdir
-    mknod = os.mknod
-    open = os.open
+	def mkdir(self, path, mode):
+		return self.get_file(path).mkdir(mode)
 
-    def read(self, path, size, offset, fh):
-        with self.rwlock:
-            os.lseek(fh, offset, 0)
-            return os.read(fh, size)
+	def mknod(self, path, mode, dev):
+		return self.get_file(path).mknod(mode, dev)
 
-    def readdir(self, path, fh):
-        return ['.', '..'] + os.listdir(path)
+	def open(self, path, flags):
+		return self.get_file(path).open(flags)
 
-    readlink = os.readlink
+	def read(self, path, size, offset, fh):
+		return self.get_file(path).read(size, offset, fh)
 
-    def release(self, path, fh):
-        return os.close(fh)
+	def readdir(self, path, fh):
+		return self.get_file(path).readdir(fh)
 
-    def rename(self, old, new):
-        return os.rename(old, self.root + new)
+	def readlink(self, path):
+		return self.get_file(path).readlink()
 
-    rmdir = os.rmdir
+	def release(self, path, fh):
+		return self.get_file(path).release(fh)
 
-    def statfs(self, path):
-        stv = os.statvfs(path)
-        return dict((key, getattr(stv, key)) for key in ('f_bavail', 'f_bfree',
-            'f_blocks', 'f_bsize', 'f_favail', 'f_ffree', 'f_files', 'f_flag',
-            'f_frsize', 'f_namemax'))
+	def rename(self, path, new):
+		return self.get_file(path).rename(path, new)
 
-    def symlink(self, target, source):
-        return os.symlink(source, target)
+	def rmdir(self, path):
+		return self.get_file(path).rmdir(path)
 
-    def truncate(self, path, length, fh=None):
-        with open(path, 'r+') as f:
-            f.truncate(length)
+	def statfs(self, path):
+		print "here: %s" % path
+		return self.get_file(path).statfs()
 
-    unlink = os.unlink
-    utimens = os.utime
+	def symlink(self, path, source):
+		return self.get_file(path).symlink(source)
 
-    def write(self, path, data, offset, fh):
-        with self.rwlock:
-            os.lseek(fh, offset, 0)
-            return os.write(fh, data)
+	def truncate(self, path, length, fh=None):
+		return self.get_file(path).truncate(length, fh)
+
+	def unlink(self, path):
+		return self.get_file(path).unlink()
+
+	def utimens(self, path, times=None):
+		return self.get_file(path).utimens(times)
+
+	def write(self, path, data, offset, fh):
+		return self.get_file(path).write(data, offset, fh)
+
+	def get_file(self, path):
+		return self.file_system.get(path)
