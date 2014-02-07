@@ -7,6 +7,7 @@ import os
 
 from fuse import FuseOSError, Operations, LoggingMixIn
 from file_system import FileSystem
+from swift_source import SwiftSource
 
 import metadata
 
@@ -17,7 +18,15 @@ class Moodledata(LoggingMixIn, Operations):
 		# TODO: take this out once the metadata is actually exclusively representing the state on SWIFT
 		metadata.cache_path = self.cache_dir
 		self.config = config
-		self.file_system = FileSystem(self.cache_dir)
+		swift_connection = SwiftSource(
+			auth_url=config["swift.auth_url"],
+			username=config["swift.username"],
+			password=config["swift.password"],
+			tenant_id=config["swift.tenant_id"],
+			region_name=config["swift.region_name"],
+			source_bucket=config["source_bucket"])
+
+		self.file_system = FileSystem(self.cache_dir, swift_connection)
 
 	def __call__(self, op, path, *args):
 		retval = super(Moodledata, self).__call__(op, path, *args)
@@ -69,7 +78,7 @@ class Moodledata(LoggingMixIn, Operations):
 		return self.object_for_path(path).read(size, offset, fh)
 
 	def readdir(self, path, fh):
-		return self.object_for_path(path).readdir(fh)
+		return self.file_system.readdir(path, fh)
 
 	def readlink(self, path):
 		return self.object_for_path(path).readlink()
@@ -102,4 +111,4 @@ class Moodledata(LoggingMixIn, Operations):
 		return self.object_for_path(path).write(data, offset, fh)
 
 	def object_for_path(self, path):
-		return self.file_system.get(path)
+		return self.file_system.get(path.lstrip("/"))

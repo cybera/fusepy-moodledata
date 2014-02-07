@@ -1,8 +1,36 @@
 import os
 
 from threading import Lock
+from sqlalchemy import Column, Integer, String, INT, REAL
+from file_system import Session
+from file_system import Base
+
+class Node(Base):
+	__tablename__ = "nodes"
+	id = Column(Integer, primary_key=True)
+	name = Column(String)
+	path = Column(String)
+	mode = Column(INT)
+	uid = Column(INT)
+	gid = Column(INT)
+	mtime = Column(REAL)
+	atime = Column(REAL)
+	ctime = Column(REAL)
+	size = Column(INT)
 
 class FSNode(object):
+	# __tablename__ = "nodes"
+	# id = Column(Integer, primary_key=True)
+	# name = Column(String)
+	# path = Column(String)
+	# mode = Column(INT)
+	# uid = Column(INT)
+	# gid = Column(INT)
+	# mtime = Column(REAL)
+	# atime = Column(REAL)
+	# ctime = Column(REAL)
+	# size = Column(INT)
+
 	def __init__(self, path, file_system):
 		self.path = path
 		self.file_system = file_system
@@ -74,8 +102,11 @@ class Directory(FSNode):
 	def __init__(self, path, file_system):
 		super(Directory, self).__init__(path, file_system)
 
-	def readdir(self, fh):
-		return ['.', '..'] + os.listdir(self.cache_path())
+	def __refresh_metadata__(self):
+		self.children
+
+	def children(self):
+		return [row[0] for row in self.db.select("SELECT name FROM nodes WHERE path = ?", self.path.lstrip("/"))]
 
 	def rmdir(self):
 		return os.rmdir(self.cache_path())
