@@ -26,7 +26,8 @@ class SwiftSource:
 				data = source_file.read()
 
 		obj = self.swift_mount.store_object(fsnode.path.lstrip("/"), data)
-		obj.set_metadata({
+
+		metadata = {
 				"fs-mode": "%i" % fsnode.mode,
 				"fs-uid": "%i" % fsnode.uid,
 				"fs-gid": "%i" % fsnode.gid,
@@ -35,4 +36,9 @@ class SwiftSource:
 				"fs-ctime": "%f" % fsnode.ctime,
 				"fs-nlink": "%i" % fsnode.nlink,
 				"fs-size": "%i" % fsnode.size
-			})
+			}
+
+		if os.path.islink(source_path):
+			metadata["fs-link-source"] = fsnode.link_source
+
+		obj.set_metadata(metadata)

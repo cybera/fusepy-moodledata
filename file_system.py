@@ -144,6 +144,7 @@ class FileSystem(LoggingMixIn, Operations):
 		session.add(node)
 		session.commit()
 
+		# Strange things happen if you don't return the number of bytes written from this function call.
 		return len(data)
 
 	def release(self, path, fh):
@@ -156,6 +157,27 @@ class FileSystem(LoggingMixIn, Operations):
 			session.commit()
 		return 0
 
+	def symlink(self, target, source):
+		# TODO: Handle existing symbolic link
+		os.symlink(source, self.cache_path(target))
+		node = self.create_fsnode(target, Session())
+		self.swift_connection.create_object(node, self.cache_root)
+
+		return 0
+
+	def readlink(self, path):
+		return self.get(path, Session()).link_source
+
+	def truncate(self, path, length, fh=None):
+		# TODO: In the loopback filesystem example, it looks like this is just a variant of read?
+		return 0
+
+	def unlink(self, path):
+		# TODO: From call traces, it looks like this is what a "delete" turns into. So this is where we should
+		# be able to hook in our metadata tagging instead of actual removal (though we could remove from the
+		# cache as well)
+		return 0
+
 	def rename(self, old, new):
 		return self.file_system.rename(old, new)
 
@@ -165,12 +187,11 @@ class FileSystem(LoggingMixIn, Operations):
 	def statfs(self, path):
 		return self.object_for_path(path).statfs()
 
-	### Fuse functions that can just work on the cache
+	### Fuse functions that we might not really need
 
 	def access(self, path, mode):
 		# TODO: Is this necessary?
-		if not os.access(self.cache_path(path), mode):
-			raise FuseOSError(EACCES)
+		return 0
 
 	def open(self, path, flags):
 		# TODO: Do we really need to do anything here?
@@ -182,11 +203,11 @@ class FileSystem(LoggingMixIn, Operations):
 
 	def create(self, path, mode):
 		# TODO: Is this necessary?
-		return os.open(self.cache_path(path), os.O_WRONLY | os.O_CREAT, mode)
+		return 0
 
 	def mknod(self, path, mode, dev):
 		# TODO: Is this necessary?
-		return os.mknod(self.cache_path(path), mode, dev)
+		return 0
 
 	def flush(self, path, fh):
 		# TODO: Do we need to implement this? We can't use the python os.fsync method unless we actually
@@ -202,30 +223,24 @@ class FileSystem(LoggingMixIn, Operations):
 
 	### Needs more research / implementation thought
 
-	def symlink(self, target, source):
-		# TODO: Just like a directory, an object should be able to be created for the symlink (with empty data)
-		# and the actual fact that it's a symlink should be able to be determined from the mode of the cached
-		# file. So, just like a directory, make the equivalent symlink in the cache directory and then grab its
-		# info for the object metadata
-		return 0
-
-	def truncate(self, path, length, fh=None):
-		# TODO: In the loopback filesystem example, it looks like this is just a variant of read?
-		return 0
-
-	def unlink(self, path):
-		# TODO: From call traces, it looks like this is what a "delete" turns into. So this is where we should
-		# be able to hook in our metadata tagging instead of actual removal (though we could remove from the
-		# cache as well)
-		return 0
-
-	def readlink(self, path):
-		return 0
-
 	def utimens(self, path, times=None):
 		return 0
 
 	def link(self, target, source):
+		# TODO: We *might* be able to implement this reliably. We'd have to check first that the hard link was being
+		# done where target and source were both under the cache_root (meaning they are both under the same swift backed
+		# "filesystem"). Then we'd add an extra field of metadata, much like that for a symbolic link (perhaps even use
+		# the same metadata field: "fs-link-source") and when a file like this was created, we'd set the metadata value
+		# instead of uploading contents. We'd also have to be aware of this during the re-creation of the filesystem upon
+		# mounting. Of course, the database would also have to be updated in the same way. We may need to add another
+		# attribute type to indicate that the object is actually a hard link, as opposed to a regular file (as the mode
+		# info won't do this in the same way it does for directories and symbolic links). But we may also be able to use
+		# whether or not the "link-source" is set and whether the file looks like a regular file otherwise in order to
+		# differentiate.
+		#
+		# The most important thing would be to follow the principle of a 1-to-1 mapping between filesystem objects and
+		# swift objects. If everything on the filesystem is represented by an object in swift, then we can easily re-create
+		# it without a lot of magic.
 		return 0
 
 	def getxattr(self, path, name, position=0):
@@ -277,6 +292,10 @@ class FileSystem(LoggingMixIn, Operations):
 				nlink=obj_metadata['x-object-meta-fs-nlink'],
 				size=obj_metadata['x-object-meta-fs-size'],
 				dirty=0)
+
+			if 'x-object-meta-fs-link-source' in obj_metadata:
+				node.link_source = obj_metadata['x-object-meta-fs-link-source']
+
 			session.add(node)
 
 		session.commit()
@@ -295,6 +314,10 @@ class FileSystem(LoggingMixIn, Operations):
 		cached_attr = dict((key, getattr(cached_st, key)) for key in ('st_atime', 'st_ctime',
 			'st_gid', 'st_mode', 'st_mtime', 'st_nlink', 'st_size', 'st_uid'))
 
+		link_source = None
+		if os.path.islink(self.cache_path(path)):
+			link_source = os.readlink(self.cache_path(path))
+
 		node = FSNode(
 			path=path.lstrip("/"),
 			name=file_name,
@@ -307,7 +330,8 @@ class FileSystem(LoggingMixIn, Operations):
 			ctime=float(cached_attr['st_ctime']),
 			nlink=int(cached_attr['st_nlink']),
 			size=int(cached_attr['st_size']),
-			dirty=0)
+			dirty=0,
+			link_source=link_source)
 		session.add(node)
 		session.commit()
 

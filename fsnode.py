@@ -20,6 +20,7 @@ class FSNode(Base):
 	nlink = Column(INT)
 	size = Column(INT)
 	dirty = Column(INT)
+	link_source = Column(String)
 
 	def attr(self):
 		return {
