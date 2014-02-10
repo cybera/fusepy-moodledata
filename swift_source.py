@@ -1,4 +1,5 @@
 import pyrax
+import os
 
 class SwiftSource:
 	def __init__(self, auth_url, username, password, tenant_id, region_name, source_bucket):
@@ -13,3 +14,25 @@ class SwiftSource:
 
 	def get_objects(self, path):
 		return self.swift_mount.get_objects(prefix = path.lstrip("/"))
+
+	def create_object(self, fsnode, cache_root):
+		# TODO: Do we really need to pass the cache_root? Can it perhaps be set on the fsnode already?
+		# TODO: This needs to be way more efficient. Large files won't be able to be read into a single string.
+		# TODO: We'll probably want to use the "upload file" functionality of pyrax instead for actual files
+		data = ""
+		source_path = os.path.join(cache_root, fsnode.path.lstrip("/"))
+		if os.path.isfile(source_path):
+			with open (source_path, "r") as source_file:
+				data = source_file.read()
+
+		obj = self.swift_mount.store_object(fsnode.path.lstrip("/"), data)
+		obj.set_metadata({
+				"fs-mode": "%i" % fsnode.mode,
+				"fs-uid": "%i" % fsnode.uid,
+				"fs-gid": "%i" % fsnode.gid,
+				"fs-mtime": "%f" % fsnode.mtime,
+				"fs-atime": "%f" % fsnode.atime,
+				"fs-ctime": "%f" % fsnode.ctime,
+				"fs-nlink": "%i" % fsnode.nlink,
+				"fs-size": "%i" % fsnode.size
+			})
