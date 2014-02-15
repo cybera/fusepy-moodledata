@@ -21,6 +21,7 @@ class FSNode(Base):
 	size = Column(INT)
 	dirty = Column(INT)
 	link_source = Column(String)
+	deleted_on = Column(REAL)
 
 	def attr(self):
 		return {

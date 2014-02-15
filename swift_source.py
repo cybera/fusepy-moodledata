@@ -15,7 +15,7 @@ class SwiftSource:
 	def get_objects(self, path):
 		return self.swift_mount.get_objects(prefix = path.lstrip("/"))
 
-	def create_object(self, fsnode, cache_root):
+	def update_object(self, fsnode, cache_root):
 		# TODO: Do we really need to pass the cache_root? Can it perhaps be set on the fsnode already?
 		# TODO: This needs to be way more efficient. Large files won't be able to be read into a single string.
 		# TODO: We'll probably want to use the "upload file" functionality of pyrax instead for actual files
@@ -24,6 +24,8 @@ class SwiftSource:
 		if os.path.isfile(source_path):
 			with open (source_path, "r") as source_file:
 				data = source_file.read()
+
+		print "data: %s" % data
 
 		obj = self.swift_mount.store_object(fsnode.path.lstrip("/"), data)
 
@@ -42,3 +44,10 @@ class SwiftSource:
 			metadata["fs-link-source"] = fsnode.link_source
 
 		obj.set_metadata(metadata)
+
+	def move_object(self, old, new):
+		obj = self.get_object(old)
+		if obj:
+			obj.move(obj.container, new.lstrip("/"))
+
+		# This assumes we're moving within the same bucket

@@ -13,3 +13,6 @@ class Config:
 
 	def __getitem__(self,key):
 		return self.parser.get(self.section, key)
+
+	def __contains__(self,key):
+		return self.parser.has_option(self.section, key)
