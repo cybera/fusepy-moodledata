@@ -87,7 +87,9 @@ class FileSystem(LoggingMixIn, Operations):
 	def mkdir(self, path, mode):
 		# TODO: Handle existing directory
 		os.mkdir(self.cache_path(path), mode)
-		node = self.create_fsnode(path, Session())
+		session = Session()
+		node = FSNode()
+		node.update_from_cache(path, self)
 		self.swift_connection.update_object(node, self.cache_root)
 
 		return 0
@@ -102,10 +104,8 @@ class FileSystem(LoggingMixIn, Operations):
 
 	def readdir(self, path, fh):
 		session = Session()
-		dir_files = [fsnode for fsnode in session.query(FSNode).filter(FSNode.folder==path.lstrip("/"))]
-		current_time = time.time()
-		valid_files = [fsnode for fsnode in dir_files if not fsnode.deleted_on or fsnode.deleted_on > current_time]
-		return [fsnode.name for fsnode in valid_files]
+		fsnode = self.get(path, session)
+		return [child_node.name for child_node in fsnode.children(session)]
 
 	def write(self, path, data, offset, fh):
 		# Make sure the path exists to grab the file to.
@@ -135,7 +135,7 @@ class FileSystem(LoggingMixIn, Operations):
 		session = Session()
 		node = self.get(path, session)
 		if node and node.dirty == 1:
-			self.update_fsnode(path, node)
+			node.update_from_cache(path, self)
 			self.swift_connection.update_object(node, self.cache_root)
 			node.dirty = 0
 			session.add(node)
@@ -145,7 +145,11 @@ class FileSystem(LoggingMixIn, Operations):
 	def symlink(self, target, source):
 		# TODO: Handle existing symbolic link
 		os.symlink(source, self.cache_path(target))
-		node = self.create_fsnode(target, Session())
+		session = Session()
+		node = FSNode()
+		node.update_from_cache(path, self)
+		session.add(node)
+		session.commit()
 		self.swift_connection.update_object(node, self.cache_root)
 
 		return 0
@@ -177,8 +181,29 @@ class FileSystem(LoggingMixIn, Operations):
 			os.unlink(self.cache_path(path))
 
 	def rmdir(self, path):
-		# return an appropriate error code if the directory has files in it
-		return 0
+
+		# TODO: From call traces, it looks like this is what a "delete" turns into. So this is where we should
+		# be able to hook in our metadata tagging instead of actual removal (though we could remove from the
+		# cache as well)
+		deletion_time = time.time()
+
+		session = Session()
+		node = self.get(path, session)
+		if len(node.children(session)) > 0:
+			raise FuseOSError(errno.ENOTEMPTY)
+		else:
+			node.deleted_on = deletion_time
+			session.add(node)
+			session.commit()
+
+			obj = self.swift_connection.get_object(path)
+			if obj:
+				obj.set_metadata({ "fs-deleted-on": "%f" % deletion_time })
+				# TODO: Once the metadata is set on the object, we could actually remove it from the sqlite
+				# local store. This may improve operations that need to weed out deleted files.
+
+			if os.path.exists(self.cache_path(path)):
+				os.rmdir(self.cache_path(path))
 
 	def rename(self, old, new):
 		# Note: This function only gets called when we're moving within the Fuse mount. If
@@ -245,7 +270,8 @@ class FileSystem(LoggingMixIn, Operations):
 		session = Session()
 		node = self.get(path, session)
 		if not node:
-			node = self.create_fsnode(path, session)
+			node = FSNode()
+			node.update_from_cache(path, self)
 
 		session.add(node)
 		session.commit()
@@ -342,106 +368,18 @@ class FileSystem(LoggingMixIn, Operations):
 		Base.metadata.create_all(self.engine)
 
 		session = Session()
-		for obj in self.swift_connection.get_objects("/"):
-			obj_metadata = obj.get_metadata()
-
-			include_fsnode = True
-			if 'x-object-meta-fs-deleted-on' in obj_metadata:
-				snapshot_timestamp = self.snapshot_timestamp()
-				if not snapshot_timestamp or float(obj_metadata['x-object-meta-fs-deleted-on']) <= snapshot_timestamp:
-					include_fsnode = False
-
-			# If mounting with a snapshot timestamp, check whether 
-			if include_fsnode:
-				# split the file name out from its parent directory
-				path_data = obj.name.rsplit('/', 1)
-				if len(path_data) == 1:
-					file_folder = ""
-					file_name = path_data[0]
-				else:
-					file_folder = path_data[0]
-					file_name = path_data[1]
-
-				node = FSNode(
-					path=obj.name,
-					name=file_name,
-					folder=file_folder,
-					mode=obj_metadata['x-object-meta-fs-mode'],
-					uid=obj_metadata['x-object-meta-fs-uid'],
-					gid=obj_metadata['x-object-meta-fs-gid'],
-					mtime=obj_metadata['x-object-meta-fs-mtime'],
-					atime=obj_metadata['x-object-meta-fs-atime'],
-					ctime=obj_metadata['x-object-meta-fs-ctime'],
-					nlink=obj_metadata['x-object-meta-fs-nlink'],
-					size=obj_metadata['x-object-meta-fs-size'],
-					dirty=0)
-
-				if 'x-object-meta-fs-link-source' in obj_metadata:
-					node.link_source = obj_metadata['x-object-meta-fs-link-source']
-
-				session.add(node)
-
-		session.commit()
-
-	def create_fsnode(self, path, session):
-		# split the file name out from its parent directory
-		path_data = path.lstrip("/").rsplit('/', 1)
-		if len(path_data) == 1:
-			file_folder = ""
-			file_name = path_data[0]
-		else:
-			file_folder = path_data[0]
-			file_name = path_data[1]
-
-		cached_st = os.lstat(self.cache_path(path))
-		cached_attr = dict((key, getattr(cached_st, key)) for key in ('st_atime', 'st_ctime',
-			'st_gid', 'st_mode', 'st_mtime', 'st_nlink', 'st_size', 'st_uid'))
-
-		link_source = None
-		if os.path.islink(self.cache_path(path)):
-			link_source = os.readlink(self.cache_path(path))
-
+		# Add the root node
 		node = FSNode()
-		self.update_fsnode(path, node)
-		node.dirty = 0
-
+		node.update_from_cache("/", self)
 		session.add(node)
+
+		for obj in self.swift_connection.get_objects("/"):
+			node = FSNode()
+			node.update_from_swift(obj, self)
+			session.add(node)
+
 		session.commit()
 
-		return node
-
-	def update_fsnode(self, path, node):
-		# split the file name out from its parent directory
-		path_data = path.lstrip("/").rsplit('/', 1)
-		if len(path_data) == 1:
-			file_folder = ""
-			file_name = path_data[0]
-		else:
-			file_folder = path_data[0]
-			file_name = path_data[1]
-
-		cached_st = os.lstat(self.cache_path(path))
-		cached_attr = dict((key, getattr(cached_st, key)) for key in ('st_atime', 'st_ctime',
-			'st_gid', 'st_mode', 'st_mtime', 'st_nlink', 'st_size', 'st_uid'))
-
-		link_source = None
-		if os.path.islink(self.cache_path(path)):
-			link_source = os.readlink(self.cache_path(path))
-
-		node.path=path.lstrip("/")
-		node.name=file_name
-		node.folder=file_folder
-		node.mode=int(cached_attr['st_mode'])
-		node.uid=int(cached_attr['st_uid'])
-		node.gid=int(cached_attr['st_gid'])
-		node.mtime=float(cached_attr['st_mtime'])
-		node.atime=float(cached_attr['st_atime'])
-		node.ctime=float(cached_attr['st_ctime'])
-		node.nlink=int(cached_attr['st_nlink'])
-		node.size=int(cached_attr['st_size'])
-		node.link_source=link_source
-
-		return node
 
 	def snapshot_timestamp(self):
 		if "snapshot_time" in self.config:
