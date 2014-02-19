@@ -2,17 +2,6 @@ import pyrax
 import os
 import multiprocessing, thread
 
-'''
-ok, need to keep track of what is being uploaded along with when we started the upload
-^^^ probably also with downloads
-
-IPC is a little tricky when we need to update the state of the SQLite database.... SwiftWorker shouldn't really have any
-clue about the SQLite database.... which suggests a callback, but a callback is not serializable, which means we need a 'results queue'
-(http://pymotw.com/2/multiprocessing/communication.html is going to be helpful there)
-
-we'll also need a way of timing out a request.... but this is kinda tricky because different files will take different amounts of time to transmit.
-much pondering to do on this... much indeed...
-'''
 class SwiftWorker(multiprocessing.Process):
 	def __init__(self, task_queue, auth_url, username, password, tenant_id, region_name, source_bucket):
 		multiprocessing.Process.__init__(self)
@@ -25,7 +14,6 @@ class SwiftWorker(multiprocessing.Process):
 
 	# worker process enters a command loop until it receives the 'shutdown' command
 	def run(self):
-		print "WORKER %s: entering event loop" % self.name
 		while True:
 			print "WORKER %s: waiting for task" % self.name
 			task = self.task_queue.get()
@@ -50,16 +38,14 @@ class SwiftWorker(multiprocessing.Process):
 				else:
 					task_error = "missing arguments in 'upload_object' command"
 				self.task_queue.task_done()
+				print "WORKER %s: object created successfully" % self.name
 			elif task.command == "shutdown":
 				print "WORKER %s: swift, power.... dowwwwnnnnnnnn" % self.name
 				self.task_queue.task_done()
 				break
 			else:
 				print "WORKER %s: does not compute" % self.name
-				task.callback(error = "invalid swift worker command")
 				self.task_queue.task_done()
-
-		# ok, we've received the kill command, wrap things up cleanly here
 
 	def download_object(self, object_name, destination_path):
 		try:
@@ -77,16 +63,12 @@ class SwiftWorker(multiprocessing.Process):
 	def create_object(self, object_name, source_path, metadata):
 		# TODO: This needs to be way more efficient. Large files won't be able to be read into a single string.
 		# TODO: We'll probably want to use the "upload file" functionality of pyrax instead for actual files
-		print "WORKER %s: in create_object function" % self.name
 		data = ""
 		if os.path.isfile(source_path):
 			with open (source_path, "rb") as source_file:
 				data = source_file.read()
-		print "WORKER %s: create_object, have data...., %s" % (self.name, data)
 		obj = self.swift_mount.store_object(object_name, data)
-		print "WORKER %s: create_object, supposedly uploaded the object, hooray" % self.name
 		obj.set_metadata(metadata)
-		print "WORKER %s: create_object, set the metadata" % self.name
 		return None
 
 class SwiftTask(object):
