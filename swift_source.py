@@ -1,5 +1,7 @@
 import pyrax
 import os
+import multiprocessing
+from swift_worker import SwiftWorker, SwiftTask
 
 class SwiftSource:
 	def __init__(self, auth_url, username, password, tenant_id, region_name, source_bucket):
@@ -9,6 +11,12 @@ class SwiftSource:
 		self.swift_client = pyrax.connect_to_cloudfiles(region_name)
 		self.swift_mount = self.swift_client.get_container(source_bucket)
 
+		self.task_queue = multiprocessing.JoinableQueue()
+		num_workers = 10
+		self.workers = [SwiftWorker(self.task_queue, auth_url, username, password, tenant_id, region_name, source_bucket) for i in xrange(num_workers)]
+		for worker in self.workers:
+			worker.start()
+
 	def get_object(self, path):
 		return self.swift_mount.get_object(path.lstrip("/"))
 
@@ -17,17 +25,8 @@ class SwiftSource:
 
 	def update_object(self, fsnode, cache_root):
 		# TODO: Do we really need to pass the cache_root? Can it perhaps be set on the fsnode already?
-		# TODO: This needs to be way more efficient. Large files won't be able to be read into a single string.
-		# TODO: We'll probably want to use the "upload file" functionality of pyrax instead for actual files
-		data = ""
 		source_path = os.path.join(cache_root, fsnode.path.lstrip("/"))
-		if os.path.isfile(source_path):
-			with open (source_path, "r") as source_file:
-				data = source_file.read()
-
-		print "data: %s" % data
-
-		obj = self.swift_mount.store_object(fsnode.path.lstrip("/"), data)
+		object_name = fsnode.path.lstrip("/")
 
 		metadata = {
 				"fs-mode": "%i" % fsnode.mode,
@@ -43,7 +42,8 @@ class SwiftSource:
 		if os.path.islink(source_path):
 			metadata["fs-link-source"] = fsnode.link_source
 
-		obj.set_metadata(metadata)
+		task = SwiftTask(command="create_object", args={"object_name": object_name, "source_path": source_path, "metadata": metadata})
+		self.task_queue.put(task)
 
 	def move_object(self, old, new):
 		obj = self.get_object(old)

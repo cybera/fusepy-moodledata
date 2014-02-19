@@ -20,6 +20,7 @@ class FSNode(Base):
 	nlink = Column(INT)
 	size = Column(INT)
 	dirty = Column(INT)
+	uploading = Column(INT)
 	link_source = Column(String)
 	deleted_on = Column(REAL)
 

@@ -132,9 +132,12 @@ class FileSystem(LoggingMixIn, Operations):
 		if fh:
 			os.close(fh)
 
+		# TODO: need to find way to toggle between 'uploading' and 'not uploading' state.
+
 		session = Session()
 		node = self.get(path, session)
 		if node and node.dirty == 1:
+			#node.uploading = 1
 			node.update_from_cache(path, self)
 			self.swift_connection.update_object(node, self.cache_root)
 			node.dirty = 0
@@ -395,3 +398,4 @@ class FileSystem(LoggingMixIn, Operations):
 			print "retval: %s from %s (path: %s | args: %s)" % (retval, op, path, args)
 
 		return retval
+
