@@ -1,10 +1,14 @@
 import pyrax
 import os
 import multiprocessing
-from swift_worker import SwiftWorker, SwiftTask
+import thread
+from swift_worker import SwiftWorker, SwiftTask, SwiftResponse
 
 class SwiftSource:
 	def __init__(self, auth_url, username, password, tenant_id, region_name, source_bucket):
+		# TODO: now that we have swift workers, should we move away from having swift connections here?
+		#       The advantage would be that we no longer would block on simple requests (which may or may not be a
+		#       performance bottleneck)
 		pyrax.settings.set('identity_type', 'keystone')
 		pyrax.set_setting("auth_endpoint", auth_url)
 		pyrax.set_credentials(username=username, api_key=password, tenant_id=tenant_id)
@@ -12,10 +16,16 @@ class SwiftSource:
 		self.swift_mount = self.swift_client.get_container(source_bucket)
 
 		self.task_queue = multiprocessing.JoinableQueue()
+		self.response_queue = multiprocessing.JoinableQueue()
+		# TODO: the number of workers should be a setting in the config file
 		num_workers = 10
-		self.workers = [SwiftWorker(self.task_queue, auth_url, username, password, tenant_id, region_name, source_bucket) for i in xrange(num_workers)]
+		self.workers = [SwiftWorker(self.task_queue, self.response_queue, auth_url, username, password, tenant_id, region_name, source_bucket) for i in xrange(num_workers)]
 		for worker in self.workers:
 			worker.start()
+
+		# TODO: do we need to keep this reference?
+		self.active_job_callbacks = {}
+		self.swift_response_thread = thread.start_new_thread(self._response_thread_main, ())
 
 	def get_object(self, path):
 		return self.swift_mount.get_object(path.lstrip("/"))
@@ -23,8 +33,10 @@ class SwiftSource:
 	def get_objects(self, path):
 		return self.swift_mount.get_objects(prefix = path.lstrip("/"))
 
-	def update_object(self, fsnode, cache_root):
+	def update_object(self, fsnode, cache_root, callback):
 		# TODO: Do we really need to pass the cache_root? Can it perhaps be set on the fsnode already?
+
+		# TODO: the callback needs to be executed upon completion with either true or false passed as the argument
 		source_path = os.path.join(cache_root, fsnode.path.lstrip("/"))
 		object_name = fsnode.path.lstrip("/")
 
@@ -43,6 +55,7 @@ class SwiftSource:
 			metadata["fs-link-source"] = fsnode.link_source
 
 		task = SwiftTask(command="create_object", args={"object_name": object_name, "source_path": source_path, "metadata": metadata})
+		self.active_job_callbacks[task.job_id] = callback
 		self.task_queue.put(task)
 
 	def move_object(self, old, new):
@@ -51,3 +64,15 @@ class SwiftSource:
 			obj.move(obj.container, new.lstrip("/"))
 
 		# This assumes we're moving within the same bucket
+
+	def _response_thread_main(self):
+		while True:
+			response = self.response_queue.get()
+			callback = self.active_job_callbacks[response.job_id]
+			callback(response.success, response.error_message)
+			# TODO: from whatever is passed in the response, we need to be able to determine:
+			#       a) did the request succeed
+			#       b) execute the callback for the request
+			#          > for this we'll likely need a dict so we can find the callback as you can't pass callbacks
+			#            through a multiprocess queue
+
