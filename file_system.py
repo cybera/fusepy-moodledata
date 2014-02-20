@@ -134,15 +134,32 @@ class FileSystem(LoggingMixIn, Operations):
 		if fh:
 			os.close(fh)
 
-		# TODO: need to find way to toggle between 'uploading' and 'not uploading' state.
-
 		session = Session()
 		node = self.get(path, session)
+
+		# TODO: do we want to log failed uploads here, or would it be better to do this where the error happened
+		def callback(success, error_message):
+			if node and node.dirty == 1 and node.uploading == 1:
+				node.uploading = 0
+				if success:
+					node.dirty = 0
+				session.add(node)
+				session.commit()
+				if not success:
+					self.release(path, fh)
+			elif node and node.dirty == 1 and node.uploading == 0:
+				self.release(path, fh)
+			else:
+				# TODO: do we need to do anything if we have an unexpected value for dirty or uploading?
+			  #       I don't think that it's possible to have dirty == 0 and uploading == 1, but what about the case
+				#       that both are 0? Does this possibly indicate that we are in an unexpected state?
+				pass
+
 		if node and node.dirty == 1:
-			#node.uploading = 1
 			node.update_from_cache(path, self)
-			self.swift_connection.update_object(node, self.cache_root)
-			node.dirty = 0
+			node.uploading = 1
+			# will swift_connection ever show signs of an error??
+			self.swift_connection.update_object(node, self.cache_root, callback)
 			session.add(node)
 			session.commit()
 		return 0
