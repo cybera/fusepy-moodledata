@@ -68,28 +68,26 @@ class FileSystem(LoggingMixIn, Operations):
 		return 0
 
 	def getattr(self, path, fh=None):
-		if path == "/":
-			st = os.lstat(self.cache_root)
+		node = self.get(path, Session())
+
+		if node:
+			return node.attr()
+		else:
+			# TODO: Certain types of operations (mkdir, for example), cause this to be called on a path
+			# that does not yet exist. What do we do about it?
+			st = os.lstat(self.cache_path(path))
 			return dict((key, getattr(st, key)) for key in ('st_atime', 'st_ctime',
 				'st_gid', 'st_mode', 'st_mtime', 'st_nlink', 'st_size', 'st_uid'))
-		else:
-			node = self.get(path, Session())
-
-			if node:
-				return node.attr()
-			else:
-				# TODO: Certain types of operations (mkdir, for example), cause this to be called on a path
-				# that does not yet exist. What do we do about it?
-				st = os.lstat(self.cache_path(path))
-				return dict((key, getattr(st, key)) for key in ('st_atime', 'st_ctime',
-					'st_gid', 'st_mode', 'st_mtime', 'st_nlink', 'st_size', 'st_uid'))
 
 	def mkdir(self, path, mode):
 		# TODO: Handle existing directory
 		os.mkdir(self.cache_path(path), mode)
 		session = Session()
-		node = FSNode()
+		node = self.get_or_create(path, session)
 		node.update_from_cache(path, self)
+		session.add(node)
+		session.commit()
+
 		self.swift_connection.update_object(node, self.cache_root)
 
 		return 0
@@ -105,7 +103,11 @@ class FileSystem(LoggingMixIn, Operations):
 	def readdir(self, path, fh):
 		session = Session()
 		fsnode = self.get(path, session)
-		return [child_node.name for child_node in fsnode.children(session)]
+
+		if fsnode:
+			return [child_node.name for child_node in fsnode.children(session)]
+		else:
+			raise FuseOSError(errno.ENOENT)
 
 	def write(self, path, data, offset, fh):
 		# Make sure the path exists to grab the file to.
@@ -149,7 +151,7 @@ class FileSystem(LoggingMixIn, Operations):
 		# TODO: Handle existing symbolic link
 		os.symlink(source, self.cache_path(target))
 		session = Session()
-		node = FSNode()
+		node = self.get_or_create(path, session)
 		node.update_from_cache(path, self)
 		session.add(node)
 		session.commit()
@@ -239,6 +241,8 @@ class FileSystem(LoggingMixIn, Operations):
 		return 0
 
 	def statfs(self, path):
+		# TODO: 'ls -l' still gives "total 0" at the top on every call, which is probably due
+		# to something being incorrectly returned here.
 		return self.object_for_path(path).statfs()
 
 	def truncate(self, path, length, fh=None):
@@ -273,7 +277,7 @@ class FileSystem(LoggingMixIn, Operations):
 		session = Session()
 		node = self.get(path, session)
 		if not node:
-			node = FSNode()
+			node = self.get_or_create(path, session)
 			node.update_from_cache(path, self)
 
 		session.add(node)
@@ -337,8 +341,21 @@ class FileSystem(LoggingMixIn, Operations):
 
 	####### Helper Functions #######
 
-	def get(self, path, session):
-		return session.query(FSNode).filter(FSNode.path==path.lstrip("/")).first()
+	def get_or_create(self, path, session):
+		node = self.get(path, session, include_deleted=True)
+		if node:
+			node.undelete()
+			return node
+		else:
+			return FSNode()
+
+	def get(self, path, session, include_deleted=False):
+		fsnode = session.query(FSNode).filter(FSNode.path==path.lstrip("/")).first()
+		# Don't return the node if a soft delete has been performed on it
+		if fsnode and (include_deleted or not fsnode.is_deleted(self.snapshot_timestamp())):
+			return fsnode
+		else:
+			return None
 
 	def cache_path(self, path):
 		return os.path.join(self.cache_root, path.lstrip("/"))
@@ -378,8 +395,9 @@ class FileSystem(LoggingMixIn, Operations):
 
 		for obj in self.swift_connection.get_objects("/"):
 			node = FSNode()
-			node.update_from_swift(obj, self)
-			session.add(node)
+			node.update_from_swift(obj)
+			if not node.is_deleted(self.snapshot_timestamp()):
+				session.add(node)
 
 		session.commit()
 

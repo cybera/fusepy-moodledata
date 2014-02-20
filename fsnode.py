@@ -45,6 +45,18 @@ class FSNode(Base):
 	def is_symbolic_link(self):
 		return stat.S_ISLNK(self.mode)
 
+	def is_deleted(self, as_of_timestamp=None):
+		if as_of_timestamp:
+			return self.deleted_on is not None and self.deleted_on <= as_of_timestamp
+		else:
+			return self.deleted_on is not None
+
+	def delete(self):
+		self.deleted_on = time.time()
+
+	def undelete(self):
+		self.deleted_on = None
+
 	def children(self, session):
 		dir_files = [fsnode for fsnode in session.query(FSNode).filter(FSNode.folder==self.path.lstrip("/")).filter(FSNode.path!="")]
 		current_time = time.time()
@@ -82,41 +94,36 @@ class FSNode(Base):
 		self.link_source=link_source
 
 
-	def update_from_swift(self, swift_obj, file_system):
+	def update_from_swift(self, swift_obj):
 		obj_metadata = swift_obj.get_metadata()
 
-		include_fsnode = True
+		# split the file name out from its parent directory
+		path_data = swift_obj.name.rsplit('/', 1)
+		if len(path_data) == 1:
+			file_folder = ""
+			file_name = path_data[0]
+		else:
+			file_folder = path_data[0]
+			file_name = path_data[1]
+
+		self.path=swift_obj.name
+		self.name=file_name
+		self.folder=file_folder
+		self.mode=obj_metadata['x-object-meta-fs-mode']
+		self.uid=obj_metadata['x-object-meta-fs-uid']
+		self.gid=obj_metadata['x-object-meta-fs-gid']
+		self.mtime=obj_metadata['x-object-meta-fs-mtime']
+		self.atime=obj_metadata['x-object-meta-fs-atime']
+		self.ctime=obj_metadata['x-object-meta-fs-ctime']
+		self.nlink=obj_metadata['x-object-meta-fs-nlink']
+		self.size=obj_metadata['x-object-meta-fs-size']
+		self.dirty=0
+
 		if 'x-object-meta-fs-deleted-on' in obj_metadata:
-			snapshot_timestamp = file_system.snapshot_timestamp()
-			if not snapshot_timestamp or float(obj_metadata['x-object-meta-fs-deleted-on']) <= snapshot_timestamp:
-				include_fsnode = False
+			self.deleted_on=obj_metadata['x-object-meta-fs-deleted-on']
 
-		# If mounting with a snapshot timestamp, check whether 
-		if include_fsnode:
-			# split the file name out from its parent directory
-			path_data = swift_obj.name.rsplit('/', 1)
-			if len(path_data) == 1:
-				file_folder = ""
-				file_name = path_data[0]
-			else:
-				file_folder = path_data[0]
-				file_name = path_data[1]
-
-			self.path=swift_obj.name
-			self.name=file_name
-			self.folder=file_folder
-			self.mode=obj_metadata['x-object-meta-fs-mode']
-			self.uid=obj_metadata['x-object-meta-fs-uid']
-			self.gid=obj_metadata['x-object-meta-fs-gid']
-			self.mtime=obj_metadata['x-object-meta-fs-mtime']
-			self.atime=obj_metadata['x-object-meta-fs-atime']
-			self.ctime=obj_metadata['x-object-meta-fs-ctime']
-			self.nlink=obj_metadata['x-object-meta-fs-nlink']
-			self.size=obj_metadata['x-object-meta-fs-size']
-			self.dirty=0
-
-			if 'x-object-meta-fs-link-source' in obj_metadata:
-				self.link_source = obj_metadata['x-object-meta-fs-link-source']
+		if 'x-object-meta-fs-link-source' in obj_metadata:
+			self.link_source = obj_metadata['x-object-meta-fs-link-source']
 
 	# def __init__(self, path, file_system):
 	# 	self.path = path
