@@ -7,14 +7,27 @@ from fuse import FuseOSError, Operations, LoggingMixIn
 
 from swift_source import SwiftSource
 
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy import create_engine
-
 from threading import Lock
 
-Session = sessionmaker()
-Base = declarative_base()
+# TODO: We'll want to remove/disable this in the actual production scenario
+# import logging
+# logger = logging.getLogger('peewee')
+# logger.setLevel(logging.DEBUG)
+# logger.addHandler(logging.StreamHandler())
+
+from peewee import SqliteDatabase
+
+class NoJournalSqliteDatabase(SqliteDatabase):
+	def connect(self):
+		super(NoJournalSqliteDatabase, self).connect()
+		self.execute_sql("PRAGMA synchronous = OFF")
+		self.execute_sql("PRAGMA journal_mode=memory")
+		self.execute_sql("PRAGMA cache_size = 200000")
+		self.execute_sql("PRAGMA temp_store = MEMORY")
+		self.execute_sql("PRAGMA count_changes = OFF")
+
+# TODO: write the database somewhere other than the current directory
+global_db = NoJournalSqliteDatabase("metadata.db", threadlocals=True)
 
 from fsnode import FSNode
 
@@ -33,9 +46,7 @@ class FileSystem(LoggingMixIn, Operations):
 			region_name=config["swift.region_name"],
 			source_bucket=config["source_bucket"])
 
-		# TODO: write the database somewhere other than the current directory
-		self.engine = create_engine('sqlite:///metadata.db')
-		Session.configure(bind=self.engine)
+		self.db = global_db
 		self.refresh_from_object_store()
 
 	####### FUSE Functions #######
@@ -43,32 +54,28 @@ class FileSystem(LoggingMixIn, Operations):
 	### Fuse functions that need to work with the object store
 
 	def chmod(self, path, mode):
-		session = Session()
-		node = self.get(path, session)
+		node = self.get(path)
 		node.mode = mode
-		session.add(node)
-		session.commit()
+		node.save()
 		# TODO: This has the potential to be quite slow. We may want to send the
 		# operation off to a background process
-		obj = self.swift_connection.get_object(path)
-		obj.set_metadata({ "fs-mode": "%i" % mode })
+		### obj = self.swift_connection.get_object(path)
+		### obj.set_metadata({ "fs-mode": "%i" % mode })
 		return 0
 
 	def chown(self, path, uid, gid):
-		session = Session()
-		node = self.get(path, session)
+		node = self.get(path)
 		node.uid = uid
 		node.gid = gid
-		session.add(node)
-		session.commit()
+		node.save()
 		# TODO: This has the potential to be quite slow. We may want to send the
 		# operation off to a background process
-		obj = self.swift_connection.get_object(path)
-		obj.set_metadata({ "fs-uid": "%i" % uid, "fs-gid": "%i" % gid })
+		### obj = self.swift_connection.get_object(path)
+		### obj.set_metadata({ "fs-uid": "%i" % uid, "fs-gid": "%i" % gid })
 		return 0
 
 	def getattr(self, path, fh=None):
-		node = self.get(path, Session())
+		node = self.get(path)
 
 		if node:
 			return node.attr()
@@ -82,13 +89,14 @@ class FileSystem(LoggingMixIn, Operations):
 	def mkdir(self, path, mode):
 		# TODO: Handle existing directory
 		os.mkdir(self.cache_path(path), mode)
-		session = Session()
-		node = self.get_or_create(path, session)
+		node = self.get_or_create(path)
 		node.update_from_cache(path, self)
-		session.add(node)
-		session.commit()
+		node.save()
 
-		self.swift_connection.update_object(node, self.cache_root)
+		def callback(success, error_message):
+			pass
+
+		self.swift_connection.update_object(node, self.cache_root, callback)
 
 		return 0
 
@@ -101,11 +109,10 @@ class FileSystem(LoggingMixIn, Operations):
 			raise FuseOSError(errno.ENOENT)
 
 	def readdir(self, path, fh):
-		session = Session()
-		fsnode = self.get(path, session)
+		fsnode = self.get(path)
 
 		if fsnode:
-			return [child_node.name for child_node in fsnode.children(session)]
+			return [child_node.name for child_node in fsnode.children()]
 		else:
 			raise FuseOSError(errno.ENOENT)
 
@@ -117,15 +124,14 @@ class FileSystem(LoggingMixIn, Operations):
 		if not os.path.exists(cache_folder_path):
 			os.makedirs(cache_folder_path)
 
-		session = Session()
-		node = self.get(path, session)
+		node = self.get(path)
 
 		os.lseek(fh, offset, 0)
 		retval = os.write(fh, data)
 
-		node.dirty = 1
-		session.add(node)
-		session.commit()
+		if node:
+			node.dirty = 1
+			node.save()
 
 		# Strange things happen if you don't return the number of bytes written from this function call.
 		return retval
@@ -134,17 +140,15 @@ class FileSystem(LoggingMixIn, Operations):
 		if fh:
 			os.close(fh)
 
-		session = Session()
-		node = self.get(path, session)
-
 		# TODO: do we want to log failed uploads here, or would it be better to do this where the error happened
 		def callback(success, error_message):
+			node = self.get(path)
+
 			if node and node.dirty == 1 and node.uploading == 1:
 				node.uploading = 0
 				if success:
 					node.dirty = 0
-				session.add(node)
-				session.commit()
+				node.save()
 				if not success:
 					self.release(path, fh)
 			elif node and node.dirty == 1 and node.uploading == 0:
@@ -155,29 +159,27 @@ class FileSystem(LoggingMixIn, Operations):
 				#       that both are 0? Does this possibly indicate that we are in an unexpected state?
 				pass
 
+		node = self.get(path)
 		if node and node.dirty == 1:
 			node.update_from_cache(path, self)
 			node.uploading = 1
 			# will swift_connection ever show signs of an error??
 			self.swift_connection.update_object(node, self.cache_root, callback)
-			session.add(node)
-			session.commit()
+			node.save()
 		return 0
 
 	def symlink(self, target, source):
 		# TODO: Handle existing symbolic link
 		os.symlink(source, self.cache_path(target))
-		session = Session()
-		node = self.get_or_create(path, session)
+		node = self.get_or_create(path)
 		node.update_from_cache(path, self)
-		session.add(node)
-		session.commit()
+		node.save()
 		self.swift_connection.update_object(node, self.cache_root)
 
 		return 0
 
 	def readlink(self, path):
-		return self.get(path, Session()).link_source
+		return self.get(path).link_source
 
 	### To be implemented...
 
@@ -187,11 +189,9 @@ class FileSystem(LoggingMixIn, Operations):
 		# cache as well)
 		deletion_time = time.time()
 
-		session = Session()
-		node = self.get(path, session)
+		node = self.get(path)
 		node.deleted_on = deletion_time
-		session.add(node)
-		session.commit()
+		node.save()
 
 		obj = self.swift_connection.get_object(path)
 		if obj:
@@ -209,14 +209,12 @@ class FileSystem(LoggingMixIn, Operations):
 		# cache as well)
 		deletion_time = time.time()
 
-		session = Session()
-		node = self.get(path, session)
-		if len(node.children(session)) > 0:
+		node = self.get(path)
+		if len(node.children()) > 0:
 			raise FuseOSError(errno.ENOTEMPTY)
 		else:
 			node.deleted_on = deletion_time
-			session.add(node)
-			session.commit()
+			node.save()
 
 			obj = self.swift_connection.get_object(path)
 			if obj:
@@ -236,8 +234,7 @@ class FileSystem(LoggingMixIn, Operations):
 			else:
 				os.unlink(self.cache_path(old))
 
-		session = Session()
-		node = self.get(old, session)
+		node = self.get(old)
 
 		path_data = new.lstrip("/").rsplit('/', 1)
 		if len(path_data) == 1:
@@ -250,8 +247,7 @@ class FileSystem(LoggingMixIn, Operations):
 		node.name = file_name
 		node.folder = file_folder
 		node.path = new.lstrip("/")
-		session.add(node)
-		session.commit()
+		node.save()
 
 		self.swift_connection.move_object(old, new)
 
@@ -260,11 +256,15 @@ class FileSystem(LoggingMixIn, Operations):
 	def statfs(self, path):
 		# TODO: 'ls -l' still gives "total 0" at the top on every call, which is probably due
 		# to something being incorrectly returned here.
-		return self.object_for_path(path).statfs()
+		# return self.object_for_path(path).statfs()
+
+		stv = os.statvfs(path)
+		return dict((key, getattr(stv, key)) for key in ('f_bavail', 'f_bfree',
+			'f_blocks', 'f_bsize', 'f_favail', 'f_ffree', 'f_files', 'f_flag',
+			'f_frsize', 'f_namemax'))
 
 	def truncate(self, path, length, fh=None):
-		session = Session()
-		node = self.get(path, session)
+		node = self.get(path)
 
 		if fh:
 			os.ftruncate(fh, length)
@@ -273,8 +273,7 @@ class FileSystem(LoggingMixIn, Operations):
 				f.truncate(length)
 
 		node.dirty = 1
-		session.add(node)
-		session.commit()
+		node.save()
 
 	### Fuse functions that we might not really need
 
@@ -291,14 +290,12 @@ class FileSystem(LoggingMixIn, Operations):
 	def create(self, path, mode):
 		fh = os.open(self.cache_path(path), os.O_WRONLY | os.O_CREAT, mode)
 
-		session = Session()
-		node = self.get(path, session)
+		node = self.get(path)
 		if not node:
-			node = self.get_or_create(path, session)
+			node = self.get_or_create(path)
 			node.update_from_cache(path, self)
 
-		session.add(node)
-		session.commit()
+		node.save()
 
 		return fh
 
@@ -358,16 +355,16 @@ class FileSystem(LoggingMixIn, Operations):
 
 	####### Helper Functions #######
 
-	def get_or_create(self, path, session):
-		node = self.get(path, session, include_deleted=True)
+	def get_or_create(self, path):
+		node = self.get(path, include_deleted=True)
 		if node:
 			node.undelete()
 			return node
 		else:
 			return FSNode()
 
-	def get(self, path, session, include_deleted=False):
-		fsnode = session.query(FSNode).filter(FSNode.path==path.lstrip("/")).first()
+	def get(self, path, include_deleted=False):
+		fsnode = FSNode.select().where(FSNode.path==path.lstrip("/")).first()
 		# Don't return the node if a soft delete has been performed on it
 		if fsnode and (include_deleted or not fsnode.is_deleted(self.snapshot_timestamp())):
 			return fsnode
@@ -385,7 +382,7 @@ class FileSystem(LoggingMixIn, Operations):
 		if not os.path.exists(cache_folder_path):
 			os.makedirs(cache_folder_path)
 
-		# TODO: start a process to grab this object in the background and return the requested 
+		# TODO: start a process to grab this object in the background and return the requested
 		# data from this function as soon as it's available
 		obj = self.swift_connection.get_object(path)
 
@@ -401,22 +398,22 @@ class FileSystem(LoggingMixIn, Operations):
 
 	def refresh_from_object_store(self):
 		# Drop and recreate the database from scratch
-		Base.metadata.drop_all(self.engine)
-		Base.metadata.create_all(self.engine)
+		# Base.metadata.drop_all(self.engine)
+		# Base.metadata.create_all(self.engine)
+		if FSNode.table_exists():
+			FSNode.drop_table()
+		FSNode.create_table()
 
-		session = Session()
 		# Add the root node
 		node = FSNode()
 		node.update_from_cache("/", self)
-		session.add(node)
+		node.save()
 
 		for obj in self.swift_connection.get_objects("/"):
 			node = FSNode()
 			node.update_from_swift(obj)
 			if not node.is_deleted(self.snapshot_timestamp()):
-				session.add(node)
-
-		session.commit()
+				node.save()
 
 
 	def snapshot_timestamp(self):
@@ -426,11 +423,10 @@ class FileSystem(LoggingMixIn, Operations):
 			return None
 
 	def __call__(self, op, path, *args):
-		print "calling %s (path: %s | args: %s)" % (op, path, args)
+		# print "calling %s (path: %s | args: %s)" % (op, path, args)
 		retval = super(FileSystem, self).__call__(op, path, *args)
 
-		if op != "get":
-			print "retval: %s from %s (path: %s | args: %s)" % (retval, op, path, args)
+		# if op != "get":
+		# 	print "retval: %s from %s (path: %s | args: %s)" % (retval, op, path, args)
 
 		return retval
-

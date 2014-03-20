@@ -1,37 +1,44 @@
 import os, stat, time
 
 from threading import Lock
-from sqlalchemy import Column, Integer, String, INT, REAL
-from file_system import Session
-from file_system import Base
+from peewee import *
 
-class FSNode(Base):
-	__tablename__ = "nodes"
-	id = Column(Integer, primary_key=True)
-	path = Column(String)
-	name = Column(String)
-	folder = Column(String)
-	mode = Column(INT)
-	uid = Column(INT)
-	gid = Column(INT)
-	mtime = Column(REAL)
-	atime = Column(REAL)
-	ctime = Column(REAL)
-	nlink = Column(INT)
-	size = Column(INT)
-	dirty = Column(INT)
-	uploading = Column(INT)
-	link_source = Column(String)
-	deleted_on = Column(REAL)
+import file_system
+
+class BaseModel(Model):
+	"""A base model that will use our Sqlite database"""
+	class Meta:
+		database = file_system.global_db
+
+class FSNode(BaseModel):
+	class Meta:
+		db_table = "nodes"
+
+	id = PrimaryKeyField()
+	path = CharField()
+	name = CharField()
+	folder = CharField()
+	mode = IntegerField()
+	uid = IntegerField()
+	gid = IntegerField()
+	mtime = DoubleField()
+	atime = DoubleField()
+	ctime = DoubleField()
+	nlink = IntegerField()
+	size = IntegerField()
+	dirty = IntegerField(null=True)
+	uploading = IntegerField(null=True)
+	link_source = CharField(null=True)
+	deleted_on = DoubleField(null=True)
 
 	def attr(self):
 		return {
 			'st_atime': self.atime,
 			'st_ctime': self.ctime,
-			'st_gid': self.gid, 
-			'st_mode': self.mode, 
+			'st_gid': self.gid,
+			'st_mode': self.mode,
 			'st_mtime': self.mtime,
-			'st_nlink': self.nlink, 
+			'st_nlink': self.nlink,
 			'st_size': self.size,
 			'st_uid': self.uid
 		}
@@ -57,8 +64,9 @@ class FSNode(Base):
 	def undelete(self):
 		self.deleted_on = None
 
-	def children(self, session):
-		dir_files = [fsnode for fsnode in session.query(FSNode).filter(FSNode.folder==self.path.lstrip("/")).filter(FSNode.path!="")]
+	def children(self):
+		dir_files = [fsnode for fsnode in FSNode.select().where(FSNode.folder==self.path.lstrip("/")).where(FSNode.path!="")]
+		# dir_files = [fsnode for fsnode in session.query(FSNode).filter(FSNode.folder==self.path.lstrip("/")).filter(FSNode.path!="")]
 		current_time = time.time()
 		return [fsnode for fsnode in dir_files if not fsnode.deleted_on or fsnode.deleted_on > current_time]
 
