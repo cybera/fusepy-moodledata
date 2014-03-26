@@ -54,16 +54,28 @@ class SwiftSource:
 		if os.path.islink(source_path):
 			metadata["fs-link-source"] = fsnode.link_source
 
-		task = SwiftTask(command="create_object", args={"object_name": object_name, "source_path": source_path, "metadata": metadata})
+		task = SwiftTask(command = "create_object", 
+				args = {
+					"object_name": object_name,
+					"source_path": source_path,
+					"metadata": metadata
+				})
 		self.active_job_callbacks[task.job_id] = callback
 		self.task_queue.put(task)
 
-	def move_object(self, old, new):
-		obj = self.get_object(old)
-		if obj:
-			obj.move(obj.container, new.lstrip("/"))
+	def move_object(self, src_path, dest_path, callback):
+		"""
+		Moves object from the source to destination and then calls the callback.
 
-		# This assumes we're moving within the same bucket
+		NOTE: This assumes we're moving within the same bucket
+		"""
+		task = SwiftTask(command = "move_object", 
+				args = {
+					"source": src_path.lstrip("/"),
+					"destination": dest_path.lstrip("/")
+				})
+		self.active_job_callbacks[task.job_id] = callback
+		self.task_queue.put(task)
 
 	def _response_thread_main(self):
 		while True:

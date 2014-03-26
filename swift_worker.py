@@ -46,6 +46,19 @@ class SwiftWorker(multiprocessing.Process):
 					task_success = False
 					task_error_message = "missing arguments in 'upload_object' command"
 				print "WORKER %s: object created successfully" % self.name
+			elif task.command == "move_object":
+				print "WORKER %s: moving object" % self.name
+				if "source" in task.args.keys() and "destination" in task.args.keys():
+					source = task.args["source"]
+					destination = task.args["destination"]
+					task_success = self.move_object(source, destination)
+					if not task_success:
+						task_error_message = "error moving object"
+				else:
+					task_success = False
+					task_error_message = "missing arguments in 'move_object' command"
+				print "WORKER %s: object moved successfully" % self.name
+				
 			elif task.command == "shutdown":
 				print "WORKER %s: swift, power.... dowwwwnnnnnnnn" % self.name
 				stay_alive = False
@@ -94,6 +107,21 @@ class SwiftWorker(multiprocessing.Process):
 		# TODO: right now our error checking consists of making sure we get a 201 http response
 		#				this could be enough, but really this deserves more research.
 		return upload_response['status'] == 201
+
+	def move_object(self, source, destination):
+		"""
+		Moves the file from source to destination in the same container.
+		This really ends up renaming the object.
+		"""
+		upload_response = {}
+		obj = self.swift_mount.get_object(source)
+		if obj:
+			obj.move(obj.container, destination.lstrip("/"), extra_info = upload_response)
+			# TODO: right now our error checking consists of making sure we get a 201 http response
+			#				this could be enough, but really this deserves more research.
+			return upload_response['status'] == 201
+		else:
+			return False
 
 class SwiftTask(object):
 	'''

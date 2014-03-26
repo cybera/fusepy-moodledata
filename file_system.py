@@ -169,11 +169,14 @@ class FileSystem(LoggingMixIn, Operations):
 
 	def symlink(self, target, source):
 		# TODO: Handle existing symbolic link
+		def callback(success, error_message):
+			# TODO: implement callback
+			pass
 		os.symlink(source, self.cache_path(target))
 		node = self.get_or_create(path)
 		node.update_from_cache(path, self)
 		node.save()
-		self.swift_connection.update_object(node, self.cache_root)
+		self.swift_connection.update_object(node, self.cache_root, callback)
 
 		return 0
 
@@ -227,6 +230,9 @@ class FileSystem(LoggingMixIn, Operations):
 	def rename(self, old, new):
 		# Note: This function only gets called when we're moving within the Fuse mount. If
 		# external directories are involved, different functions are called.
+		def callback(success, error_message):
+			# TODO: implement callback
+			pass
 		if os.path.exists(self.cache_path(old)):
 			if os.path.exists(self.cache_path(new)):
 				os.rename(self.cache_path(old), self.cache_path(new))
@@ -248,7 +254,7 @@ class FileSystem(LoggingMixIn, Operations):
 		node.path = new.lstrip("/")
 		node.save()
 
-		self.swift_connection.move_object(old, new)
+		self.swift_connection.move_object(old, new, callback)
 
 		return 0
 
