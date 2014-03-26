@@ -40,6 +40,8 @@ class SwiftWorker(multiprocessing.Process):
 					source_path = task.args["source_path"]
 					metadata = task.args["metadata"] if ("metadata" in task.args.keys()) else {}
 					task_success = self.create_object(object_name, source_path, metadata)
+					if not task_success:
+						task_error_message = "error uploading object"
 				else:
 					task_success = False
 					task_error_message = "missing arguments in 'upload_object' command"
@@ -76,14 +78,22 @@ class SwiftWorker(multiprocessing.Process):
 		NOTE: pyrax's upload_file function takes care of segmenting files if they
 				  exceed the max object size.
 		"""
-		# TODO: Right now we always return true.... surely its possoble to fail here.  
+		upload_response = {}
 		if os.path.isfile(source_path):
-			obj = self.swift_mount.upload_file(source_path, obj_name = object_name)
+			# TODO: we currently can't use the swift object's upload_file as it does not
+			#				accept the extra_info arguement (this could be fixed by submitting
+			#				a pull request to pyrax
+			obj = self.swift_client.upload_file(self.swift_mount, source_path, 
+					obj_name = object_name, extra_info = upload_response)
 		else:
 			data = ""
-			obj = self.swift_mount.store_object(object_name, data)
+			obj = self.swift_mount.store_object(object_name, data, extra_info = upload_response)
 		obj.set_metadata(metadata)
-		return True
+		# TODO: if we want to be really paraniod we can verify the MD5 hash of the uploaded object
+		#				this is the 'etag' value in upload_response
+		# TODO: right now our error checking consists of making sure we get a 201 http response
+		#				this could be enough, but really this deserves more research.
+		return upload_response['status'] == 201
 
 class SwiftTask(object):
 	'''
