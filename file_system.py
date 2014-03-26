@@ -140,7 +140,6 @@ class FileSystem(LoggingMixIn, Operations):
 		if fh:
 			os.close(fh)
 
-		# TODO: do we want to log failed uploads here, or would it be better to do this where the error happened
 		def callback(success, error_message):
 			node = self.get(path)
 
@@ -150,6 +149,7 @@ class FileSystem(LoggingMixIn, Operations):
 					node.dirty = 0
 				node.save()
 				if not success:
+					# TODO: log error message
 					self.release(path, fh)
 			elif node and node.dirty == 1 and node.uploading == 0:
 				self.release(path, fh)
@@ -163,7 +163,6 @@ class FileSystem(LoggingMixIn, Operations):
 		if node and node.dirty == 1:
 			node.update_from_cache(path, self)
 			node.uploading = 1
-			# will swift_connection ever show signs of an error??
 			self.swift_connection.update_object(node, self.cache_root, callback)
 			node.save()
 		return 0
