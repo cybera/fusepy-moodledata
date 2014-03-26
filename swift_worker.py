@@ -69,14 +69,19 @@ class SwiftWorker(multiprocessing.Process):
 		return True
 
 	def create_object(self, object_name, source_path, metadata):
-		# TODO: This needs to be way more efficient. Large files won't be able to be read into a single string.
-		#			  We'll probably want to use the "upload file" functionality of pyrax instead for actual files
+		"""
+		Creates the specified object in Swift. If the source_path points to a file
+		then we upload the file, otherwise, we upload an empty object.
+
+		NOTE: pyrax's upload_file function takes care of segmenting files if they
+				  exceed the max object size.
+		"""
 		# TODO: Right now we always return true.... surely its possoble to fail here.  
-		data = ""
 		if os.path.isfile(source_path):
-			with open (source_path, "rb") as source_file:
-				data = source_file.read()
-		obj = self.swift_mount.store_object(object_name, data)
+			obj = self.swift_mount.upload_file(source_path, obj_name = object_name)
+		else:
+			data = ""
+			obj = self.swift_mount.store_object(object_name, data)
 		obj.set_metadata(metadata)
 		return True
 
