@@ -45,7 +45,11 @@ class SwiftWorker(multiprocessing.Process):
 				else:
 					task_success = False
 					task_error_message = "missing arguments in 'upload_object' command"
-				print "WORKER %s: object created successfully" % self.name
+				if task_success:
+					print "WORKER %s: object created successfully" % self.name
+				else:
+					print "WORKER %s: unable to create object" % self.name
+
 			elif task.command == "move_object":
 				print "WORKER %s: moving object" % self.name
 				if "source" in task.args.keys() and "destination" in task.args.keys():
@@ -57,7 +61,26 @@ class SwiftWorker(multiprocessing.Process):
 				else:
 					task_success = False
 					task_error_message = "missing arguments in 'move_object' command"
-				print "WORKER %s: object moved successfully" % self.name
+				if task_success:
+					print "WORKER %s: object moved successfully" % self.name
+				else:
+					print "WORKER %s: failed to move object" % self.name
+
+			elif task.command == "set_object_metadata":
+				print "WORKER %s: setting metadata for object" % self.name
+				if "object_name" in task.args.keys() and "metadata" in task.args.keys():
+					object_name = task.args["object_name"]
+					metadata = task.args["metadata"]
+					task_success = self.set_object_metadata(object_name, metadata)
+					if not task_success:
+						task_error_message = "error setting metadata for object"
+				else:
+					task_success = False
+					task_error_message = "missing arguments in 'set_metadata' command"
+				if task_success:
+					print "WORKER %s: successfully set metadata for object" % self.name
+				else:
+					print "WORKER %s: unable to set metadata for object" % self.name
 				
 			elif task.command == "shutdown":
 				print "WORKER %s: swift, power.... dowwwwnnnnnnnn" % self.name
@@ -87,6 +110,7 @@ class SwiftWorker(multiprocessing.Process):
 		"""
 		Creates the specified object in Swift. If the source_path points to a file
 		then we upload the file, otherwise, we upload an empty object.
+		Will return true iff the returned http status code is 201 (Created)
 
 		NOTE: pyrax's upload_file function takes care of segmenting files if they
 				  exceed the max object size.
@@ -112,6 +136,7 @@ class SwiftWorker(multiprocessing.Process):
 		"""
 		Moves the file from source to destination in the same container.
 		This really ends up renaming the object.
+		Will return true iff the returned http status code is 201 (Created)
 		"""
 		upload_response = {}
 		obj = self.swift_mount.get_object(source)
@@ -120,6 +145,21 @@ class SwiftWorker(multiprocessing.Process):
 			# TODO: right now our error checking consists of making sure we get a 201 http response
 			#				this could be enough, but really this deserves more research.
 			return upload_response['status'] == 201
+		else:
+			return False
+	
+	def set_object_metadata(self, object_name, metadata):
+		"""
+		Sets the metadata for the given object.
+		Will return true iff the returned http status code is 202 (Accepted)
+		"""
+		call_response = {}
+		obj = self.swift_mount.get_object(object_name)
+		if obj:
+			self.swift_client.set_object_metadata(self.swift_mount, obj, metadata, extra_info = call_response)
+			# TODO: right now our error checking consists of making sure we get a 201 http response
+			#				this could be enough, but really this deserves more research.
+			return call_response['status'] == 202
 		else:
 			return False
 

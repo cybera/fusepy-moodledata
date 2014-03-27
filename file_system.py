@@ -189,26 +189,34 @@ class FileSystem(LoggingMixIn, Operations):
 		# TODO: From call traces, it looks like this is what a "delete" turns into. So this is where we should
 		# be able to hook in our metadata tagging instead of actual removal (though we could remove from the
 		# cache as well)
+		def callback(success, error_message):
+			# TODO: Once the metadata is set on the object, we could actually remove it from the sqlite
+			# local store. This may improve operations that need to weed out deleted files.
+			if not success:
+				# TODO: log errors
+				pass
+
 		deletion_time = time.time()
 
 		node = self.get(path)
 		node.deleted_on = deletion_time
 		node.save()
 
-		obj = self.swift_connection.get_object(path)
-		if obj:
-			obj.set_metadata({ "fs-deleted-on": "%f" % deletion_time })
-			# TODO: Once the metadata is set on the object, we could actually remove it from the sqlite
-			# local store. This may improve operations that need to weed out deleted files.
-
+		metadata = { "fs-deleted-on": "%f" % deletion_time }
+		self.swift_connection.set_object_metadata(path, metadata, callback)
 		if os.path.exists(self.cache_path(path)):
 			os.unlink(self.cache_path(path))
 
 	def rmdir(self, path):
-
 		# TODO: From call traces, it looks like this is what a "delete" turns into. So this is where we should
 		# be able to hook in our metadata tagging instead of actual removal (though we could remove from the
 		# cache as well)
+		def callback(success, error_message):
+			# TODO: Once the metadata is set on the object, we could actually remove it from the sqlite
+			# local store. This may improve operations that need to weed out deleted files.
+			if not success:
+				# TODO: log errors
+				pass
 		deletion_time = time.time()
 
 		node = self.get(path)
@@ -218,11 +226,8 @@ class FileSystem(LoggingMixIn, Operations):
 			node.deleted_on = deletion_time
 			node.save()
 
-			obj = self.swift_connection.get_object(path)
-			if obj:
-				obj.set_metadata({ "fs-deleted-on": "%f" % deletion_time })
-				# TODO: Once the metadata is set on the object, we could actually remove it from the sqlite
-				# local store. This may improve operations that need to weed out deleted files.
+			metadata = { "fs-deleted-on": "%f" % deletion_time }
+			self.swift_connection.set_object_metadata(path, metadata, callback)
 
 			if os.path.exists(self.cache_path(path)):
 				os.rmdir(self.cache_path(path))

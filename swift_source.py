@@ -33,10 +33,20 @@ class SwiftSource:
 	def get_objects(self, path):
 		return self.swift_mount.get_objects(prefix = path.lstrip("/"))
 
+	def set_object_metadata(self, path, metadata, callback):
+		"""
+		Sets the metadata for the object. The metadata argument should be a dict.
+		"""
+		task = SwiftTask(command = "set_object_metadata",
+				args = {
+					"object_name": path.lstrip("/"),
+					"metadata": metadata
+				})
+		self.active_job_callbacks[task.job_id] = callback
+		self.task_queue.put(task)
+
 	def update_object(self, fsnode, cache_root, callback):
 		# TODO: Do we really need to pass the cache_root? Can it perhaps be set on the fsnode already?
-
-		# TODO: the callback needs to be executed upon completion with either true or false passed as the argument
 		source_path = os.path.join(cache_root, fsnode.path.lstrip("/"))
 		object_name = fsnode.path.lstrip("/")
 
