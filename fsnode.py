@@ -27,9 +27,14 @@ class FSNode(BaseModel):
 	nlink = IntegerField()
 	size = IntegerField()
 	dirty = IntegerField(null=True)
-	uploading = IntegerField(null=True)
 	link_source = CharField(null=True)
 	deleted_on = DoubleField(null=True)
+
+	# if downloading or uploading fields are not null they should be set to the timestamp
+	# of when the download/upload was started. From this and the file size we can calculate
+	# reasonable timeouts.
+	downloading = IntegerField(null=True)
+	uploading = IntegerField(null=True)
 
 	def attr(self):
 		return {

@@ -3,7 +3,6 @@ import os
 import multiprocessing
 from random import randint
 
-# TODO: need to send SwiftResponse object back to the response queue to indicate success or failure
 class SwiftWorker(multiprocessing.Process):
 	def __init__(self, task_queue, response_queue, auth_url, username, password, tenant_id, region_name, source_bucket):
 		multiprocessing.Process.__init__(self)
@@ -33,6 +32,10 @@ class SwiftWorker(multiprocessing.Process):
 				else:
 					task_success = False
 					task_error_message = "missing arguments in 'download_object' command"
+				if task_success:
+					print "WORKER %s: Successfully downloaded object" % self.name
+				else:
+					print "WORKER %s: unable to download object" % self.name
 			elif task.command == "create_object":
 				print "WORKER %s: creating object" % self.name
 				if "object_name" in task.args.keys() and "source_path" in task.args.keys():
@@ -94,15 +97,20 @@ class SwiftWorker(multiprocessing.Process):
 			self.response_queue.put(response)
 
 	def download_object(self, object_name, destination_path):
+		# TODO: chunk size should be an attribute in the config file... magic number... bad
+		chunk_size = 1024*1024 # 1MB chunks
 		try:
 			fp = open(destination_path, 'wb')
 		except IOError, e:
 			return e
 		obj = self.swift_mount.get_object(object_name, cached=False)
 		if obj == None:
-			return "The object '%s' does not exist"
-		for chunk in obj.get(chunk_size=self.chunk_size):
+			return False
+		for chunk in obj.get(chunk_size=chunk_size):
 			fp.write(chunk)
+		# TODO: at this point it is probably a good idea to check the file size and make
+		#       sure that the MD5 hash matches. If either of these do not check out, we
+		#       should return false
 		fp.close()
 		return True
 

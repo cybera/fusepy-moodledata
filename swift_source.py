@@ -18,7 +18,7 @@ class SwiftSource:
 		self.task_queue = multiprocessing.JoinableQueue()
 		self.response_queue = multiprocessing.JoinableQueue()
 		# TODO: the number of workers should be a setting in the config file
-		num_workers = 10
+		num_workers = 5
 		self.workers = [SwiftWorker(self.task_queue, self.response_queue, auth_url, username, password, tenant_id, region_name, source_bucket) for i in xrange(num_workers)]
 		for worker in self.workers:
 			worker.start()
@@ -26,6 +26,20 @@ class SwiftSource:
 		# TODO: do we need to keep this reference?
 		self.active_job_callbacks = {}
 		self.swift_response_thread = thread.start_new_thread(self._response_thread_main, ())
+
+	def download_object(self, object_name, destination, callback):
+		"""
+		Downloads the specified object to the destionation
+		If the file does not yet exist we create it. This will cover the case that the calling
+		code needs to open the file for reading before the file is created.
+		"""
+		task = SwiftTask(command = "download_object",
+				args = {
+					"object_name": object_name,
+					"destination_path": destination
+					})
+		self.active_job_callbacks[task.job_id] = callback
+		self.task_queue.put(task)
 
 	def get_object(self, path):
 		return self.swift_mount.get_object(path.lstrip("/"))

@@ -1,5 +1,3 @@
-import metadata
-
 import os, time, dateutil.parser, errno
 from stat import S_IFDIR, S_IFLNK, S_IFREG
 
@@ -101,6 +99,20 @@ class FileSystem(LoggingMixIn, Operations):
 		return 0
 
 	def read(self, path, size, offset, fh):
+		"""
+		Returns the chunk of the file specified.
+		If the file is currently downloading we wait until the request can be fulfilled
+		"""
+		node = self.get(path)
+		cached_file = self.cache_path(path)
+		while node.downloading != None:
+			if os.path.getsize(cached_file) >= offset + size:
+				break
+			# TODO: the sleep time should maybe be customizable via config file
+			# TODO: we should probably have a timeout, this should be a function of the file size
+			#       and time elapsed for download
+			time.sleep(0.1)
+			node = self.get(path) # refresh node object from db
 		if fh:
 			with self.rwlock:
 				os.lseek(fh, offset, 0)
@@ -385,6 +397,16 @@ class FileSystem(LoggingMixIn, Operations):
 		return os.path.join(self.cache_root, path.lstrip("/"))
 
 	def refresh_cache_file(self, path):
+		def callback(success, error_message):
+			# TODO: is there any circumstance that we don't want to clear the downloading field
+			#       in the node?
+			node = self.get(path)
+			node.downloading = None
+			node.save()
+			if not success:
+				# TODO: need to be logging failures and in this case probably retry the download
+				pass
+
 		# Make sure the path exists to grab the file to.
 		# TODO: make sure to set mode/gid/uid and various times according to what's in the metadata db
 		# as all of these folders should actually have objects and thus database items for them.
@@ -394,7 +416,6 @@ class FileSystem(LoggingMixIn, Operations):
 
 		# TODO: start a process to grab this object in the background and return the requested
 		# data from this function as soon as it's available
-		obj = self.swift_connection.get_object(path)
 
 		# Make sure the path exists to grab the file to.
 		# TODO: make sure to set mode/gid/uid and various times according to what's in the metadata db
@@ -402,9 +423,15 @@ class FileSystem(LoggingMixIn, Operations):
 		cache_folder_path = os.path.dirname(self.cache_path(path))
 		if not os.path.exists(cache_folder_path):
 			os.makedirs(cache_folder_path)
-		cache_file = open(self.cache_path(path), 'w')
-		cache_file.write(obj.fetch()) # python will convert \n to os.linesep
-		cache_file.close()
+
+		# First we make sure that the file exists so other methods can open it and query the size, ect
+		open(self.cache_path(path), 'a').close()
+
+		# Now we mark the node as download in progress
+		node = self.get(path)
+		node.downloading = time.time()
+		node.save()
+		self.swift_connection.download_object(path.lstrip("/"), self.cache_path(path), callback)
 
 	def refresh_from_object_store(self):
 		# Drop and recreate the database from scratch
