@@ -1,10 +1,13 @@
+from functools import wraps
 import pyrax
 import os
 import multiprocessing
 from random import randint
 
+from swiftclient import client as _swift_client
+
 class SwiftWorker(multiprocessing.Process):
-	def __init__(self, task_queue, response_queue, auth_url, username, password, tenant_id, region_name, source_bucket):
+	def __init__(self, task_queue, response_queue, auth_url, username, password, tenant_id, region_name, source_bucket, max_attempts = 5):
 		multiprocessing.Process.__init__(self)
 		self.task_queue = task_queue
 		self.response_queue = response_queue
@@ -13,14 +16,45 @@ class SwiftWorker(multiprocessing.Process):
 		pyrax.set_credentials(username=username, api_key=password, tenant_id=tenant_id)
 		self.swift_client = pyrax.connect_to_cloudfiles(region_name)
 		self.swift_mount = self.swift_client.get_container(source_bucket)
+		self.max_attempts = max_attempts
 
-	# worker process enters a command loop until it receives the 'shutdown' command
+	def handle_client_exception(fnc):
+		"""
+		Here we wrap all our functions that actually make requests to Swift to do some generic
+		exception handling. If an exception can not be handled generically then we just re-raise it.
+		"""
+		@wraps(fnc)
+		def _wrapped(self, *args, **kwargs):
+			attempts = 0
+
+			while attempts < self.max_attempts:
+				attempts += 1
+				try:
+					ret = fnc(self, *args, **kwargs)
+					return ret
+				except _swift_client.ClientException, e:
+					if e.http_status == 500:
+						print "WORKER %s: ERROR STATE: got http 500 error" % self.name
+						continue
+					else:
+						print "WORKER %s: ERROR STATE: %e" % (self.name, e)
+						raise
+				except:
+					raise
+		return _wrapped
+
 	def run(self):
+		"""
+		This is the main event loop for our worker threads.
+		When there is a task we check that all arguements are provided and then pass things off
+		to the appropriate handler. If an exception is raised, or the task otherwise fails we
+		simply pass the failure information into the response queue and let whichever callback
+		was provided handle the failure.
+		"""
 		stay_alive = True
 		while stay_alive:
 			print "WORKER %s: waiting for task" % self.name
 			task = self.task_queue.get()
-			print "WORKER %s: have task, ok, lets go" % self.name
 			task_success = True
 			task_error_message = None
 			if task.command == "download_object":
@@ -28,64 +62,66 @@ class SwiftWorker(multiprocessing.Process):
 				if "object_name" in task.args.keys() and "destination_path" in task.args.keys():
 					object_name = task.args["object_name"]
 					destination_path = task.args["destination_path"]
-					task_success = self.download_object(object_name, destination_path)
+					try:
+						task_success = self.download_object(object_name, destination_path)
+						if not task_success:
+							task_error_message = "unable to download object"
+					except Exception, e:
+						task_success = False
+						task_error_message = e.message
 				else:
 					task_success = False
 					task_error_message = "missing arguments in 'download_object' command"
-				if task_success:
-					print "WORKER %s: Successfully downloaded object" % self.name
-				else:
-					print "WORKER %s: unable to download object" % self.name
 			elif task.command == "create_object":
 				print "WORKER %s: creating object" % self.name
 				if "object_name" in task.args.keys() and "source_path" in task.args.keys():
 					object_name = task.args["object_name"]
 					source_path = task.args["source_path"]
 					metadata = task.args["metadata"] if ("metadata" in task.args.keys()) else {}
-					task_success = self.create_object(object_name, source_path, metadata)
-					if not task_success:
-						task_error_message = "error uploading object"
+					try:
+						task_success = self.create_object(object_name, source_path, metadata)
+						if not task_success:
+							task_error_message = "unable to create object"
+					except Exception, e:
+						task_success = False
+						task_error_message = e.message
 				else:
 					task_success = False
 					task_error_message = "missing arguments in 'upload_object' command"
-				if task_success:
-					print "WORKER %s: object created successfully" % self.name
-				else:
-					print "WORKER %s: unable to create object" % self.name
-
 			elif task.command == "move_object":
 				print "WORKER %s: moving object" % self.name
 				if "source" in task.args.keys() and "destination" in task.args.keys():
 					source = task.args["source"]
 					destination = task.args["destination"]
-					task_success = self.move_object(source, destination)
-					if not task_success:
-						task_error_message = "error moving object"
+					try:
+						task_success = self.move_object(source, destination)
+						if not task_success:
+							task_error_message = "unable to move object"
+					except Exception, e:
+						task_success = False
+						task_error_message = e.message
 				else:
 					task_success = False
 					task_error_message = "missing arguments in 'move_object' command"
-				if task_success:
-					print "WORKER %s: object moved successfully" % self.name
-				else:
-					print "WORKER %s: failed to move object" % self.name
 
 			elif task.command == "set_object_metadata":
 				print "WORKER %s: setting metadata for object" % self.name
 				if "object_name" in task.args.keys() and "metadata" in task.args.keys():
 					object_name = task.args["object_name"]
 					metadata = task.args["metadata"]
-					task_success = self.set_object_metadata(object_name, metadata)
-					if not task_success:
-						task_error_message = "error setting metadata for object"
+					try:
+						task_success = self.set_object_metadata(object_name, metadata)
+						if not task_success:
+							task_error_message = "unable to set metadata for object"
+					except Exception, e:
+						task_success = False
+						task_error_message = e.message
 				else:
 					task_success = False
 					task_error_message = "missing arguments in 'set_metadata' command"
-				if task_success:
-					print "WORKER %s: successfully set metadata for object" % self.name
-				else:
-					print "WORKER %s: unable to set metadata for object" % self.name
 				
 			elif task.command == "shutdown":
+				# TODO: this would probably be best handled by dealing with a process signal
 				print "WORKER %s: swift, power.... dowwwwnnnnnnnn" % self.name
 				stay_alive = False
 			else:
@@ -96,6 +132,12 @@ class SwiftWorker(multiprocessing.Process):
 			response = SwiftResponse(task.job_id, task_success, task_error_message)
 			self.response_queue.put(response)
 
+			if task_success:
+				print "WORKER %s: task successful" % self.name
+			else:
+				print "WORKER %s: task failed" % self.name
+
+	@handle_client_exception
 	def download_object(self, object_name, destination_path):
 		# TODO: chunk size should be an attribute in the config file... magic number... bad
 		chunk_size = 1024*1024 # 1MB chunks
@@ -114,6 +156,7 @@ class SwiftWorker(multiprocessing.Process):
 		fp.close()
 		return True
 
+	@handle_client_exception
 	def create_object(self, object_name, source_path, metadata):
 		"""
 		Creates the specified object in Swift. If the source_path points to a file
@@ -140,6 +183,7 @@ class SwiftWorker(multiprocessing.Process):
 		#				this could be enough, but really this deserves more research.
 		return upload_response['status'] == 201
 
+	@handle_client_exception
 	def move_object(self, source, destination):
 		"""
 		Moves the file from source to destination in the same container.
@@ -156,6 +200,7 @@ class SwiftWorker(multiprocessing.Process):
 		else:
 			return False
 	
+	@handle_client_exception
 	def set_object_metadata(self, object_name, metadata):
 		"""
 		Sets the metadata for the given object.

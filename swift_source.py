@@ -18,7 +18,7 @@ class SwiftSource:
 		self.task_queue = multiprocessing.JoinableQueue()
 		self.response_queue = multiprocessing.JoinableQueue()
 		# TODO: the number of workers should be a setting in the config file
-		num_workers = 5
+		num_workers = 200
 		self.workers = [SwiftWorker(self.task_queue, self.response_queue, auth_url, username, password, tenant_id, region_name, source_bucket) for i in xrange(num_workers)]
 		for worker in self.workers:
 			worker.start()
@@ -103,9 +103,12 @@ class SwiftSource:
 
 	def _response_thread_main(self):
 		while True:
-			response = self.response_queue.get()
-			callback = self.active_job_callbacks[response.job_id]
-			callback(response.success, response.error_message)
+			try:
+				response = self.response_queue.get()
+				callback = self.active_job_callbacks[response.job_id]
+				callback(response.success, response.error_message)
+			except Exception, e:
+				print e
 			# TODO: from whatever is passed in the response, we need to be able to determine:
 			#       a) did the request succeed
 			#       b) execute the callback for the request
