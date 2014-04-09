@@ -1,5 +1,6 @@
 from functools import wraps
 import pyrax
+import logging
 import os
 import multiprocessing
 from random import randint
@@ -9,6 +10,7 @@ from swiftclient import client as _swift_client
 class SwiftWorker(multiprocessing.Process):
 	def __init__(self, task_queue, response_queue, auth_url, username, password, tenant_id, region_name, source_bucket, max_attempts = 5):
 		multiprocessing.Process.__init__(self)
+		self.logger = logging.getLogger('swift_worker')
 		self.task_queue = task_queue
 		self.response_queue = response_queue
 		pyrax.settings.set('identity_type', 'keystone')
@@ -34,10 +36,9 @@ class SwiftWorker(multiprocessing.Process):
 					return ret
 				except _swift_client.ClientException, e:
 					if e.http_status == 500:
-						print "WORKER %s: ERROR STATE: got http 500 error" % self.name
+						self.logger.error('''"worker":"%s", "message":"500 error, attempt %d: %s"''', self.name, attempts, e.message)
 						continue
 					else:
-						print "WORKER %s: ERROR STATE: %e" % (self.name, e)
 						raise
 				except:
 					raise
@@ -53,15 +54,15 @@ class SwiftWorker(multiprocessing.Process):
 		"""
 		stay_alive = True
 		while stay_alive:
-			print "WORKER %s: waiting for task" % self.name
+			self.logger.debug('''"worker":"%s", "message":"waiting for task"''', self.name)
 			task = self.task_queue.get()
 			task_success = True
 			task_error_message = None
 			if task.command == "download_object":
-				print "WORKER %s: time to download an object" % self.name
 				if "object_name" in task.args.keys() and "destination_path" in task.args.keys():
 					object_name = task.args["object_name"]
 					destination_path = task.args["destination_path"]
+					self.logger.debug('''"worker":"%s", "message":"downloading object '%s'"''', self.name, object_name)
 					try:
 						task_success = self.download_object(object_name, destination_path)
 						if not task_success:
@@ -73,11 +74,11 @@ class SwiftWorker(multiprocessing.Process):
 					task_success = False
 					task_error_message = "missing arguments in 'download_object' command"
 			elif task.command == "create_object":
-				print "WORKER %s: creating object" % self.name
 				if "object_name" in task.args.keys() and "source_path" in task.args.keys():
 					object_name = task.args["object_name"]
 					source_path = task.args["source_path"]
 					metadata = task.args["metadata"] if ("metadata" in task.args.keys()) else {}
+					self.logger.debug('''"worker":"%s", "message":"creating object '%s'"''', self.name, object_name)
 					try:
 						task_success = self.create_object(object_name, source_path, metadata)
 						if not task_success:
@@ -89,10 +90,10 @@ class SwiftWorker(multiprocessing.Process):
 					task_success = False
 					task_error_message = "missing arguments in 'upload_object' command"
 			elif task.command == "move_object":
-				print "WORKER %s: moving object" % self.name
 				if "source" in task.args.keys() and "destination" in task.args.keys():
 					source = task.args["source"]
 					destination = task.args["destination"]
+					self.logger.debug('''"worker":"%s", "message":"moving object '%s' to '%s'"''', self.name, source, destination)
 					try:
 						task_success = self.move_object(source, destination)
 						if not task_success:
@@ -105,10 +106,10 @@ class SwiftWorker(multiprocessing.Process):
 					task_error_message = "missing arguments in 'move_object' command"
 
 			elif task.command == "set_object_metadata":
-				print "WORKER %s: setting metadata for object" % self.name
 				if "object_name" in task.args.keys() and "metadata" in task.args.keys():
 					object_name = task.args["object_name"]
 					metadata = task.args["metadata"]
+					self.logger.debug('''"worker":"%s", "message":"setting metadata for object '%s'"''', self.name, object_name)
 					try:
 						task_success = self.set_object_metadata(object_name, metadata)
 						if not task_success:
@@ -122,10 +123,10 @@ class SwiftWorker(multiprocessing.Process):
 				
 			elif task.command == "shutdown":
 				# TODO: this would probably be best handled by dealing with a process signal
-				print "WORKER %s: swift, power.... dowwwwnnnnnnnn" % self.name
+				self.logger.debug('''"worker":"%s", "message":"worker thread shutting down"''', self.name)
 				stay_alive = False
 			else:
-				print "WORKER %s: does not compute" % self.name
+				self.logger.debug('''"worker":"%s", "message":"invalid job command"''', self.name)
 				task_success = False
 				task_error_message = "Invalid command"
 			self.task_queue.task_done()
@@ -133,9 +134,9 @@ class SwiftWorker(multiprocessing.Process):
 			self.response_queue.put(response)
 
 			if task_success:
-				print "WORKER %s: task successful" % self.name
+				self.logger.debug('''"worker":"%s", "message":"task successful"''', self.name)
 			else:
-				print "WORKER %s: task failed" % self.name
+				self.logger.debug('''"worker":"%s", "message":"task failed: %s"''', self.name, task_error_message)
 
 	@handle_client_exception
 	def download_object(self, object_name, destination_path):

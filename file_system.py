@@ -1,19 +1,12 @@
 import os, time, dateutil.parser, errno
+import logging
 from stat import S_IFDIR, S_IFLNK, S_IFREG
-
-from fuse import FuseOSError, Operations, LoggingMixIn
-
-from swift_source import SwiftSource
-
 from threading import Lock
 
-# TODO: We'll want to remove/disable this in the actual production scenario
-# import logging
-# logger = logging.getLogger('peewee')
-# logger.setLevel(logging.DEBUG)
-# logger.addHandler(logging.StreamHandler())
-
+from fuse import FuseOSError, Operations, LoggingMixIn
 from peewee import SqliteDatabase
+
+from swift_source import SwiftSource
 
 class NoJournalSqliteDatabase(SqliteDatabase):
 	def connect(self):
@@ -31,6 +24,7 @@ from fsnode import FSNode
 
 class FileSystem(LoggingMixIn, Operations):
 	def __init__(self, config):
+		self.logger = logging.getLogger('fuse')
 		self.rwlock = Lock()
 
 		self.config = config

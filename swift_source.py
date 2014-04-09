@@ -1,3 +1,4 @@
+import logging
 import pyrax
 import os
 import multiprocessing
@@ -9,6 +10,7 @@ class SwiftSource:
 		# TODO: now that we have swift workers, should we move away from having swift connections here?
 		#       The advantage would be that we no longer would block on simple requests (which may or may not be a
 		#       performance bottleneck)
+		self.logger = logging.getLogger('swift')
 		pyrax.settings.set('identity_type', 'keystone')
 		pyrax.set_setting("auth_endpoint", auth_url)
 		pyrax.set_credentials(username=username, api_key=password, tenant_id=tenant_id)
