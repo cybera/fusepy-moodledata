@@ -244,23 +244,21 @@ class FileSystem(LoggingMixIn, Operations):
 		def callback(success, error_message):
 			# TODO: implement callback
 			pass
-		if os.path.exists(self.cache_path(old)):
-			if os.path.exists(self.cache_path(new)):
-				os.rename(self.cache_path(old), self.cache_path(new))
-			else:
-				os.unlink(self.cache_path(old))
-
-
+	
 		node = self.get(old)
-		cached_file = self.cache_path(path)
+		cached_file = self.cache_path(old)
 		while node.downloading != None:
-			if os.path.getsize(cached_file) >= offset + size:
-				break
 			# TODO: the sleep time should maybe be customizable via config file
 			# TODO: we should probably have a timeout, this should be a function of the file size
 			#       and time elapsed for download
 			time.sleep(0.1)
 			node = self.get(old) # refresh node object from db
+
+		if os.path.exists(self.cache_path(old)):
+			if os.path.exists(self.cache_path(new)):
+				os.rename(self.cache_path(old), self.cache_path(new))
+			else:
+				os.unlink(self.cache_path(old))
 
 		path_data = new.lstrip("/").rsplit('/', 1)
 		if len(path_data) == 1:
