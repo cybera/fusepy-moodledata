@@ -194,7 +194,16 @@ class SwiftWorker(multiprocessing.Process):
 		upload_response = {}
 		obj = self.swift_mount.get_object(source)
 		if obj:
-			obj.move(obj.container, destination.lstrip("/"), extra_info = upload_response)
+			try:
+				obj.move(obj.container, destination.lstrip("/"), extra_info = upload_response)
+			except Exception, e:
+				# Oddly every once and a while a 'object/container does not exist' exception is raised even though
+				# the swift call responds with the expected HTTP 201 code. So we re-raise the exception if the move
+				# command did in fact fail
+				# TODO: this definitely warrents more investigation. In the testing done so far it really looks like
+				#       the above comment is correct, but we should be sure...
+				if upload_response['status'] != 201:
+					raise
 			# TODO: right now our error checking consists of making sure we get a 201 http response
 			#				this could be enough, but really this deserves more research.
 			return upload_response['status'] == 201
