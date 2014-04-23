@@ -20,7 +20,7 @@ class SwiftSource:
 		self.task_queue = multiprocessing.JoinableQueue()
 		self.response_queue = multiprocessing.JoinableQueue()
 		# TODO: the number of workers should be a setting in the config file
-		num_workers = 200
+		num_workers = 20
 		self.workers = [SwiftWorker(self.task_queue, self.response_queue, auth_url, username, password, tenant_id, region_name, source_bucket) for i in xrange(num_workers)]
 		for worker in self.workers:
 			worker.start()
@@ -85,20 +85,6 @@ class SwiftSource:
 					"object_name": object_name,
 					"source_path": source_path,
 					"metadata": metadata
-				})
-		self.active_job_callbacks[task.job_id] = callback
-		self.task_queue.put(task)
-
-	def move_object(self, src_path, dest_path, callback):
-		"""
-		Moves object from the source to destination and then calls the callback.
-
-		NOTE: This assumes we're moving within the same bucket
-		"""
-		task = SwiftTask(command = "move_object", 
-				args = {
-					"source": src_path.lstrip("/"),
-					"destination": dest_path.lstrip("/")
 				})
 		self.active_job_callbacks[task.job_id] = callback
 		self.task_queue.put(task)

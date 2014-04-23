@@ -1,7 +1,10 @@
 import os, time, dateutil.parser, errno
 import logging
+from collections import deque
+from shutil import copyfile
 from stat import S_IFDIR, S_IFLNK, S_IFREG
 from threading import Lock
+import thread
 
 from fuse import FuseOSError, Operations, LoggingMixIn
 from peewee import SqliteDatabase
@@ -40,6 +43,8 @@ class FileSystem(LoggingMixIn, Operations):
 
 		self.db = global_db
 		self.refresh_from_object_store()
+		self.pending_operations = deque()
+		self.job_executor_thread = thread.start_new_thread(self._job_executor_thread_main, ())
 
 	####### FUSE Functions #######
 
@@ -88,7 +93,12 @@ class FileSystem(LoggingMixIn, Operations):
 		def callback(success, error_message):
 			pass
 
-		self.swift_connection.update_object(node, self.cache_root, callback)
+		def pre_execution():
+			pass
+				
+		args = (node, self.cache_root, callback)
+		operation = FileOperation(path, self.swift_connection.update_object, args, pre_execution)
+		self.pending_operations.append(operation)
 
 		return 0
 
@@ -146,18 +156,21 @@ class FileSystem(LoggingMixIn, Operations):
 		if fh:
 			os.close(fh)
 
+		node = self.get(path)
 		def callback(success, error_message):
 			node = self.get(path)
-
-			if node and node.dirty == 1 and node.uploading == 1:
-				node.uploading = 0
+			if node is None:
+				self.logger.error("In the callback of release, node should not be none, but it is")
+				return
+			if node.dirty == 1 and node.uploading is not None:
+				node.uploading = None
 				if success:
 					node.dirty = 0
 				node.save()
 				if not success:
-					# TODO: log error message
+					self.logger.error("Upload failed, trying again")
 					self.release(path, fh)
-			elif node and node.dirty == 1 and node.uploading == 0:
+			elif node.dirty == 1 and node.uploading is None:
 				self.release(path, fh)
 			else:
 				# TODO: do we need to do anything if we have an unexpected value for dirty or uploading?
@@ -165,12 +178,16 @@ class FileSystem(LoggingMixIn, Operations):
 				#       that both are 0? Does this possibly indicate that we are in an unexpected state?
 				pass
 
-		node = self.get(path)
+		def pre_execution():
+			node.uploading = time.time()
+			node.save()
+				
 		if node and node.dirty == 1:
 			node.update_from_cache(path, self)
-			node.uploading = 1
-			self.swift_connection.update_object(node, self.cache_root, callback)
 			node.save()
+			args = (node, self.cache_root, callback)
+			operation = FileOperation(path, self.swift_connection.update_object, args, pre_execution)
+			self.pending_operations.append(operation)
 		return 0
 
 	def symlink(self, target, source):
@@ -178,12 +195,17 @@ class FileSystem(LoggingMixIn, Operations):
 		def callback(success, error_message):
 			# TODO: implement callback
 			pass
+		def pre_execution():
+			pass
+				
 		os.symlink(source, self.cache_path(target))
 		node = self.get_or_create(path)
 		node.update_from_cache(path, self)
 		node.save()
-		self.swift_connection.update_object(node, self.cache_root, callback)
 
+		args = (node, self.cache_root, callback)
+		operation = FileOperation(path, self.swift_connection.update_object, args, pre_execution)
+		self.pending_operations.append(operation)
 		return 0
 
 	def readlink(self, path):
@@ -202,16 +224,18 @@ class FileSystem(LoggingMixIn, Operations):
 				# TODO: log errors
 				pass
 
+		def pre_execution():
+			node = self.get(path)
+			node.deleted_on = deletion_time
+			node.save()
+			if os.path.exists(self.cache_path(path)):
+				os.unlink(self.cache_path(path))
+
 		deletion_time = time.time()
-
-		node = self.get(path)
-		node.deleted_on = deletion_time
-		node.save()
-
 		metadata = { "fs-deleted-on": "%f" % deletion_time }
-		self.swift_connection.set_object_metadata(path, metadata, callback)
-		if os.path.exists(self.cache_path(path)):
-			os.unlink(self.cache_path(path))
+		args = (path, metadata, callback)
+		operation = FileOperation(path, self.swift_connection.set_object_metadata, args, pre_execution)
+		self.pending_operations.append(operation)
 
 	def rmdir(self, path):
 		# TODO: From call traces, it looks like this is what a "delete" turns into. So this is where we should
@@ -223,57 +247,46 @@ class FileSystem(LoggingMixIn, Operations):
 			if not success:
 				# TODO: log errors
 				pass
-		deletion_time = time.time()
+		
+		def pre_execution():
+			pass
 
+		deletion_time = time.time()
 		node = self.get(path)
 		if len(node.children()) > 0:
 			raise FuseOSError(errno.ENOTEMPTY)
 		else:
 			node.deleted_on = deletion_time
 			node.save()
-
-			metadata = { "fs-deleted-on": "%f" % deletion_time }
-			self.swift_connection.set_object_metadata(path, metadata, callback)
-
 			if os.path.exists(self.cache_path(path)):
 				os.rmdir(self.cache_path(path))
+			metadata = { "fs-deleted-on": "%f" % deletion_time }
+			args = (path, metadata, callback)
+			operation = FileOperation(path, self.swift_connection.set_object_metadata, args, pre_execution)
+			self.pending_operations.append(operation)
+
 
 	def rename(self, old, new):
 		# Note: This function only gets called when we're moving within the Fuse mount. If
 		# external directories are involved, different functions are called.
-		def callback(success, error_message):
-			# TODO: implement callback
+		old_node = self.get(old)
+		def pre_execution():
 			pass
-	
-		node = self.get(old)
-		cached_file = self.cache_path(old)
-		while node.downloading != None:
-			# TODO: the sleep time should maybe be customizable via config file
-			# TODO: we should probably have a timeout, this should be a function of the file size
-			#       and time elapsed for download
-			time.sleep(0.1)
-			node = self.get(old) # refresh node object from db
+		def execute():
+			self.create(new, old_node.mode)
+			new_node = self.get(new)
+			copyfile(self.cache_path(old), self.cache_path(new))
+			new_node.dirty = 1
+			new_node.save()
+			self.unlink(old)
+			self.release(new, None)
 
 		if os.path.exists(self.cache_path(old)):
-			if os.path.exists(self.cache_path(new)):
-				os.rename(self.cache_path(old), self.cache_path(new))
-			else:
-				os.unlink(self.cache_path(old))
-
-		path_data = new.lstrip("/").rsplit('/', 1)
-		if len(path_data) == 1:
-			file_folder = ""
-			file_name = path_data[0]
+			execute()
 		else:
-			file_folder = path_data[0]
-			file_name = path_data[1]
-
-		node.name = file_name
-		node.folder = file_folder
-		node.path = new.lstrip("/")
-		node.save()
-
-		self.swift_connection.move_object(old, new, callback)
+			self.refresh_cache_file(old)
+			operation = FileOperation(old, execute, {}, pre_execution)
+			self.pending_operations.append(operation)
 
 		return 0
 
@@ -288,7 +301,8 @@ class FileSystem(LoggingMixIn, Operations):
 			'f_frsize', 'f_namemax'))
 
 	def truncate(self, path, length, fh=None):
-		node = self.get(path)
+		node = self.get_or_create(path)
+		node.update_from_cache(path, self)
 
 		if fh:
 			os.ftruncate(fh, length)
@@ -469,3 +483,41 @@ class FileSystem(LoggingMixIn, Operations):
 		# 	print "retval: %s from %s (path: %s | args: %s)" % (retval, op, path, args)
 
 		return retval
+	
+	def _job_executor_thread_main(self):
+		# TODO: limit the number of attempts
+		while True:
+			print "job deque: " + str(len(self.pending_operations))
+			try:
+				op = self.pending_operations.popleft()
+			except IndexError, e:
+				time.sleep(1)
+				continue
+			node = self.get(op.path)
+			if node is None:
+				time.sleep(1)
+				op.attempt += 1
+				print "node does not exist: %s" % op.path
+				continue
+			if node.uploading is not None or node.downloading is not None:
+				print "upload or download in progress, %s-%s-|" % (str(node.uploading), str(node.downloading))
+				self.pending_operations.appendleft(op)
+				continue
+			op.pre_execution()
+			op.operation(*op.operation_args)
+
+class FileOperation:
+	"""
+	node: should be the file node object
+	operation: this is the function to be executed once there is no active job running on the node
+	operation_args: a tuple of arguments to be passed to the operation function
+	pre_execution: a function to be executed before the operation. This is where things like 'uploading' should be set
+	"""
+	def __init__(self, path, operation, operation_args, pre_execution):
+		self.path = path
+		self.operation = operation
+		self.operation_args = operation_args
+		self.pre_execution = pre_execution
+		self.attempt = 0
+
+

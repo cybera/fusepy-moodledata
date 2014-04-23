@@ -89,22 +89,6 @@ class SwiftWorker(multiprocessing.Process):
 				else:
 					task_success = False
 					task_error_message = "missing arguments in 'upload_object' command"
-			elif task.command == "move_object":
-				if "source" in task.args.keys() and "destination" in task.args.keys():
-					source = task.args["source"]
-					destination = task.args["destination"]
-					self.logger.debug('''"worker":"%s", "message":"moving object '%s' to '%s'"''', self.name, source, destination)
-					try:
-						task_success = self.move_object(source, destination)
-						if not task_success:
-							task_error_message = "unable to move object"
-					except Exception, e:
-						task_success = False
-						task_error_message = e.message
-				else:
-					task_success = False
-					task_error_message = "missing arguments in 'move_object' command"
-
 			elif task.command == "set_object_metadata":
 				if "object_name" in task.args.keys() and "metadata" in task.args.keys():
 					object_name = task.args["object_name"]
@@ -184,32 +168,6 @@ class SwiftWorker(multiprocessing.Process):
 		#				this could be enough, but really this deserves more research.
 		return upload_response['status'] == 201
 
-	@handle_client_exception
-	def move_object(self, source, destination):
-		"""
-		Moves the file from source to destination in the same container.
-		This really ends up renaming the object.
-		Will return true iff the returned http status code is 201 (Created)
-		"""
-		upload_response = {}
-		obj = self.swift_mount.get_object(source)
-		if obj:
-			try:
-				obj.move(obj.container, destination.lstrip("/"), extra_info = upload_response)
-			except Exception, e:
-				# Oddly every once and a while a 'object/container does not exist' exception is raised even though
-				# the swift call responds with the expected HTTP 201 code. So we re-raise the exception if the move
-				# command did in fact fail
-				# TODO: this definitely warrents more investigation. In the testing done so far it really looks like
-				#       the above comment is correct, but we should be sure...
-				if upload_response['status'] != 201:
-					raise
-			# TODO: right now our error checking consists of making sure we get a 201 http response
-			#				this could be enough, but really this deserves more research.
-			return upload_response['status'] == 201
-		else:
-			return False
-	
 	@handle_client_exception
 	def set_object_metadata(self, object_name, metadata):
 		"""
