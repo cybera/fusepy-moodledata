@@ -7,21 +7,8 @@ from threading import Lock
 import thread
 
 from fuse import FuseOSError, Operations, LoggingMixIn
-from peewee import SqliteDatabase
 
 from swift_source import SwiftSource
-
-class NoJournalSqliteDatabase(SqliteDatabase):
-	def connect(self):
-		super(NoJournalSqliteDatabase, self).connect()
-		self.execute_sql("PRAGMA synchronous = OFF")
-		self.execute_sql("PRAGMA journal_mode=memory")
-		self.execute_sql("PRAGMA cache_size = 200000")
-		self.execute_sql("PRAGMA temp_store = MEMORY")
-		self.execute_sql("PRAGMA count_changes = OFF")
-
-# TODO: write the database somewhere other than the current directory
-global_db = NoJournalSqliteDatabase("metadata.db", threadlocals=True)
 
 from fsnode import FSNode
 
@@ -41,7 +28,6 @@ class FileSystem(LoggingMixIn, Operations):
 			region_name=config["swift.region_name"],
 			source_bucket=config["source_bucket"])
 
-		self.db = global_db
 		self.refresh_from_object_store()
 		self.pending_operations = deque()
 		self.job_executor_thread = thread.start_new_thread(self._job_executor_thread_main, ())
@@ -402,7 +388,8 @@ class FileSystem(LoggingMixIn, Operations):
 			return FSNode()
 
 	def get(self, path, include_deleted=False):
-		fsnode = FSNode.select().where(FSNode.path==path.lstrip("/")).first()
+		fsnode = FSNode.get_by_path(path.lstrip("/"))
+		#fsnode = FSNode.select().where(FSNode.path==path.lstrip("/")).first()
 		# Don't return the node if a soft delete has been performed on it
 		if fsnode and (include_deleted or not fsnode.is_deleted(self.snapshot_timestamp())):
 			return fsnode
@@ -450,12 +437,7 @@ class FileSystem(LoggingMixIn, Operations):
 		self.swift_connection.download_object(path.lstrip("/"), self.cache_path(path), callback)
 
 	def refresh_from_object_store(self):
-		# Drop and recreate the database from scratch
-		# Base.metadata.drop_all(self.engine)
-		# Base.metadata.create_all(self.engine)
-		if FSNode.table_exists():
-			FSNode.drop_table()
-		FSNode.create_table()
+		FSNode._fsdata = {}
 
 		# Add the root node
 		node = FSNode()

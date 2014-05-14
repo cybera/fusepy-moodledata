@@ -1,40 +1,42 @@
 import os, stat, time
 
 from threading import Lock
-from peewee import *
 
 import file_system
 
-class BaseModel(Model):
-	"""A base model that will use our Sqlite database"""
-	class Meta:
-		database = file_system.global_db
+class FSNode:
+	"""
+	FSNode represents either a file, directory. This class will work as is when using in-memory storage for file metadata.
+	To use a different data backend you will likely need to create a subclass and override some methods.
 
-class FSNode(BaseModel):
-	class Meta:
-		db_table = "nodes"
+	Public Attributes:
+		path         string   The full path of the object from the root of the file system
+		name         string   File name
+		folder       string   The folder path (eg. this/is/my/subfolder)
+		link_source  string   Can be None
+		mode         integer  (non-negative)
+		uid          integer  (non-negative)
+		gid          integer  (non-negative)
+		nlink        integer  (non-negative)
+		size         integer  (non-negative)
+		mtime        double   (timestamp)
+		atime        double   (timestamp)
+		ctime        double   (timestamp)
+		deleted_on   double   (timestamp)   Can be None
+		downloading  double   (timestamp)   Can be None
+		uploading    double   (timestamp)   Can be None
+		dirty        boolean  Can be None
+	"""
+	# the 'folder' is the key to the root and the value is anonther hash with directory contents where each
+	# value is a FSNode object
+	_fsdata = {}
 
-	id = PrimaryKeyField()
-	path = CharField()
-	name = CharField()
-	folder = CharField()
-	mode = IntegerField()
-	uid = IntegerField()
-	gid = IntegerField()
-	mtime = DoubleField()
-	atime = DoubleField()
-	ctime = DoubleField()
-	nlink = IntegerField()
-	size = IntegerField()
-	dirty = IntegerField(null=True)
-	link_source = CharField(null=True)
-	deleted_on = DoubleField(null=True)
-
-	# if downloading or uploading fields are not null they should be set to the timestamp
-	# of when the download/upload was started. From this and the file size we can calculate
-	# reasonable timeouts.
-	downloading = IntegerField(null=True)
-	uploading = IntegerField(null=True)
+	def __init__(self, deleted_on=None, downloading=None, uploading=None, dirty=None, link_source=None):
+		self.link_source = link_source
+		self.deleted_on = deleted_on
+		self.dirty = dirty
+		self.downloading = downloading
+		self.uploading = uploading
 
 	def attr(self):
 		return {
@@ -47,6 +49,15 @@ class FSNode(BaseModel):
 			'st_size': self.size,
 			'st_uid': self.uid
 		}
+
+	@staticmethod
+	def get_by_path(path):
+		file_folder, file_name = FSNode._parse_folder_and_file_from_path(path)
+		if file_folder in FSNode._fsdata:
+			folder = FSNode._fsdata[file_folder]
+			if file_name in folder:
+				return folder[file_name]
+		return None
 
 	def is_directory(self):
 		return stat.S_ISDIR(self.mode)
@@ -70,20 +81,29 @@ class FSNode(BaseModel):
 		self.deleted_on = None
 
 	def children(self):
-		dir_files = [fsnode for fsnode in FSNode.select().where(FSNode.folder==self.path.lstrip("/")).where(FSNode.path!="")]
-		# dir_files = [fsnode for fsnode in session.query(FSNode).filter(FSNode.folder==self.path.lstrip("/")).filter(FSNode.path!="")]
+		if self.path in FSNode._fsdata:
+			folder = FSNode._fsdata[self.path]
+		else:
+			return []
+		dir_files = [folder[f] for f in folder.keys() if not f == ""]
 		current_time = time.time()
 		return [fsnode for fsnode in dir_files if not fsnode.deleted_on or fsnode.deleted_on > current_time]
 
+	def save(self):
+		"""
+		This function should be overridden in any subclass that needs to perform an explicit save to end a transaction or
+		flush changes to disk
+		"""
+		if self.folder in self._fsdata:
+			self._fsdata[self.folder][self.name] = self
+		else:
+			self._fsdata[self.folder] = {self.name: self}
+		if self.is_directory() and not self.path in FSNode._fsdata:
+			FSNode._fsdata[self.path] = {}
+
 	def update_from_cache(self, path, file_system):
 		# split the file name out from its parent directory
-		path_data = path.lstrip("/").rsplit('/', 1)
-		if len(path_data) == 1:
-			file_folder = ""
-			file_name = path_data[0]
-		else:
-			file_folder = path_data[0]
-			file_name = path_data[1]
+		file_folder, file_name = FSNode._parse_folder_and_file_from_path(path)
 
 		cached_st = os.lstat(file_system.cache_path(path))
 		cached_attr = dict((key, getattr(cached_st, key)) for key in ('st_atime', 'st_ctime',
@@ -93,52 +113,52 @@ class FSNode(BaseModel):
 		if os.path.islink(file_system.cache_path(path)):
 			link_source = os.readlink(file_system.cache_path(path))
 
-		self.path=path.lstrip("/")
-		self.name=file_name
-		self.folder=file_folder
-		self.mode=int(cached_attr['st_mode'])
-		self.uid=int(cached_attr['st_uid'])
-		self.gid=int(cached_attr['st_gid'])
-		self.mtime=float(cached_attr['st_mtime'])
-		self.atime=float(cached_attr['st_atime'])
-		self.ctime=float(cached_attr['st_ctime'])
-		self.nlink=int(cached_attr['st_nlink'])
-		self.size=int(cached_attr['st_size'])
-		self.link_source=link_source
-
+		self.path = path.lstrip("/")
+		self.name = file_name
+		self.folder = file_folder.lstrip("/")
+		self.mode = int(cached_attr['st_mode'])
+		self.uid = int(cached_attr['st_uid'])
+		self.gid = int(cached_attr['st_gid'])
+		self.mtime = float(cached_attr['st_mtime'])
+		self.atime = float(cached_attr['st_atime'])
+		self.ctime = float(cached_attr['st_ctime'])
+		self.nlink = int(cached_attr['st_nlink'])
+		self.size = int(cached_attr['st_size'])
+		self.link_source = link_source
 
 	def update_from_swift(self, swift_obj):
 		obj_metadata = swift_obj.get_metadata()
 
 		# split the file name out from its parent directory
-		path_data = swift_obj.name.rsplit('/', 1)
+		file_folder, file_name = FSNode._parse_folder_and_file_from_path(swift_obj.name)
+
+		self.path = swift_obj.name.lstrip("/")
+		self.name = file_name
+		self.folder = file_folder.lstrip("/")
+		self.mode = int(obj_metadata['x-object-meta-fs-mode'])
+		self.uid = int(obj_metadata['x-object-meta-fs-uid'])
+		self.gid = int(obj_metadata['x-object-meta-fs-gid'])
+		self.mtime = float(obj_metadata['x-object-meta-fs-mtime'])
+		self.atime = float(obj_metadata['x-object-meta-fs-atime'])
+		self.ctime = float(obj_metadata['x-object-meta-fs-ctime'])
+		self.nlink = int(obj_metadata['x-object-meta-fs-nlink'])
+		self.size = int(obj_metadata['x-object-meta-fs-size'])
+		self.dirty = 0
+
+		if 'x-object-meta-fs-deleted-on' in obj_metadata:
+			self.deleted_on = obj_metadata['x-object-meta-fs-deleted-on']
+
+		if 'x-object-meta-fs-link-source' in obj_metadata:
+			self.link_source = obj_metadata['x-object-meta-fs-link-source']
+
+	@staticmethod
+	def _parse_folder_and_file_from_path(path):
+		path_data = path.rsplit('/', 1)
 		if len(path_data) == 1:
 			file_folder = ""
 			file_name = path_data[0]
 		else:
 			file_folder = path_data[0]
 			file_name = path_data[1]
+		return (file_folder, file_name)
 
-		self.path=swift_obj.name
-		self.name=file_name
-		self.folder=file_folder
-		self.mode=obj_metadata['x-object-meta-fs-mode']
-		self.uid=obj_metadata['x-object-meta-fs-uid']
-		self.gid=obj_metadata['x-object-meta-fs-gid']
-		self.mtime=obj_metadata['x-object-meta-fs-mtime']
-		self.atime=obj_metadata['x-object-meta-fs-atime']
-		self.ctime=obj_metadata['x-object-meta-fs-ctime']
-		self.nlink=obj_metadata['x-object-meta-fs-nlink']
-		self.size=obj_metadata['x-object-meta-fs-size']
-		self.dirty=0
-
-		if 'x-object-meta-fs-deleted-on' in obj_metadata:
-			self.deleted_on=obj_metadata['x-object-meta-fs-deleted-on']
-
-		if 'x-object-meta-fs-link-source' in obj_metadata:
-			self.link_source = obj_metadata['x-object-meta-fs-link-source']
-
-	# def __init__(self, path, file_system):
-	# 	self.path = path
-	# 	self.file_system = file_system
-	# 	self.rwlock = Lock()
