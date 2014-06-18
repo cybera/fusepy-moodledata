@@ -43,8 +43,8 @@ class SwiftSource:
 		self.active_job_callbacks[task.job_id] = callback
 		self.task_queue.put(task)
 
-	def get_object(self, path):
-		return self.swift_mount.get_object(path.lstrip("/"))
+	def get_object(self, path, cached=False):
+		return self.swift_mount.get_object(path.lstrip("/"), cached)
 
 	def get_objects(self, path):
 		return self.swift_mount.get_objects(prefix = path.lstrip("/"))

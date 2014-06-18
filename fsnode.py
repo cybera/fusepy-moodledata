@@ -3,6 +3,7 @@ import os, stat, time
 from threading import Lock
 
 import file_system
+from swift_source import SwiftSource
 
 class FSNode:
 	"""
@@ -30,6 +31,7 @@ class FSNode:
 	# the 'folder' is the key to the root and the value is anonther hash with directory contents where each
 	# value is a FSNode object
 	_fsdata = {}
+	_swift_connection = None
 
 	def __init__(self, deleted_on=None, downloading=None, uploading=None, dirty=None, link_source=None):
 		self.link_source = link_source
@@ -39,7 +41,7 @@ class FSNode:
 		self.uploading = uploading
 
 	def attr(self):
-		return {
+		result = {
 			'st_atime': self.atime,
 			'st_ctime': self.ctime,
 			'st_gid': self.gid,
@@ -49,12 +51,18 @@ class FSNode:
 			'st_size': self.size,
 			'st_uid': self.uid
 		}
+		return result
 
 	@staticmethod
 	def get_by_path(path):
-		file_folder, file_name = FSNode._parse_folder_and_file_from_path(path)
+		file_folder, file_name = FSNode._parse_folder_and_file_from_path(path.lstrip("/"))
+
+		if file_folder not in FSNode._fsdata:
+			FSNode._update_cache_for_object(file_folder)
 		if file_folder in FSNode._fsdata:
 			folder = FSNode._fsdata[file_folder]
+			if file_name not in folder:
+				FSNode._update_cache_for_object(path)
 			if file_name in folder:
 				return folder[file_name]
 		return None
@@ -101,6 +109,10 @@ class FSNode:
 		if self.is_directory() and not self.path in FSNode._fsdata:
 			FSNode._fsdata[self.path] = {}
 
+	@staticmethod
+	def set_swift_connection(swift_connection):
+		FSNode._swift_connection = swift_connection
+
 	def update_from_cache(self, path, file_system):
 		# split the file name out from its parent directory
 		file_folder, file_name = FSNode._parse_folder_and_file_from_path(path)
@@ -131,6 +143,9 @@ class FSNode:
 
 		# split the file name out from its parent directory
 		file_folder, file_name = FSNode._parse_folder_and_file_from_path(swift_obj.name)
+		if file_folder not in FSNode._fsdata:
+			FSNode._fsdata[file_folder] = {}
+		folder = FSNode._fsdata[file_folder]
 
 		self.path = swift_obj.name.lstrip("/")
 		self.name = file_name
@@ -153,7 +168,7 @@ class FSNode:
 
 	@staticmethod
 	def _parse_folder_and_file_from_path(path):
-		path_data = path.rsplit('/', 1)
+		path_data = path.lstrip("/").rsplit('/', 1)
 		if len(path_data) == 1:
 			file_folder = ""
 			file_name = path_data[0]
@@ -161,4 +176,17 @@ class FSNode:
 			file_folder = path_data[0]
 			file_name = path_data[1]
 		return (file_folder, file_name)
+
+	@staticmethod
+	def _update_cache_for_object(path):
+		file_folder, file_name = FSNode._parse_folder_and_file_from_path(path)
+		try:
+			obj = FSNode._swift_connection.get_object(path)
+		except Exception, e:
+			return None
+		if obj is not None:
+			node = FSNode()
+			node.update_from_swift(obj)
+			node.save()
+			FSNode._fsdata[file_folder][file_name] = node
 

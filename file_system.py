@@ -28,7 +28,15 @@ class FileSystem(LoggingMixIn, Operations):
 			region_name=config["swift.region_name"],
 			source_bucket=config["source_bucket"])
 
-		self.refresh_from_object_store()
+		FSNode.set_swift_connection(self.swift_connection)
+		if self.config["metadata_collection"] == "prefetch":
+			self.refresh_from_object_store()
+		else:
+			# initialize cache
+			node = FSNode()
+			node.update_from_cache("/", self)
+			node.save()
+
 		self.pending_operations = deque()
 		self.job_executor_thread = thread.start_new_thread(self._job_executor_thread_main, ())
 
@@ -59,7 +67,6 @@ class FileSystem(LoggingMixIn, Operations):
 
 	def getattr(self, path, fh=None):
 		node = self.get(path)
-
 		if node:
 			return node.attr()
 		else:
@@ -388,8 +395,7 @@ class FileSystem(LoggingMixIn, Operations):
 			return FSNode()
 
 	def get(self, path, include_deleted=False):
-		fsnode = FSNode.get_by_path(path.lstrip("/"))
-		#fsnode = FSNode.select().where(FSNode.path==path.lstrip("/")).first()
+		fsnode = FSNode.get_by_path(path)
 		# Don't return the node if a soft delete has been performed on it
 		if fsnode and (include_deleted or not fsnode.is_deleted(self.snapshot_timestamp())):
 			return fsnode
@@ -429,7 +435,7 @@ class FileSystem(LoggingMixIn, Operations):
 
 		# First we make sure that the file exists so other methods can open it and query the size, ect
 		open(self.cache_path(path), 'a').close()
-
+		
 		# Now we mark the node as download in progress
 		node = self.get(path)
 		node.downloading = time.time()

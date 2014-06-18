@@ -17,6 +17,7 @@ class SwiftWorker(multiprocessing.Process):
 		pyrax.set_setting("auth_endpoint", auth_url)
 		pyrax.set_credentials(username=username, api_key=password, tenant_id=tenant_id)
 		self.swift_client = pyrax.connect_to_cloudfiles(region_name)
+		self.swift_client.max_file_size = 1073741823	# 1GB - 1
 		self.swift_mount = self.swift_client.get_container(source_bucket)
 		self.max_attempts = max_attempts
 
@@ -151,17 +152,18 @@ class SwiftWorker(multiprocessing.Process):
 		NOTE: pyrax's upload_file function takes care of segmenting files if they
 				  exceed the max object size.
 		"""
+		metadata = self._massage_metakeys(metadata, self.swift_client.object_meta_prefix)
 		upload_response = {}
 		if os.path.isfile(source_path):
 			# TODO: we currently can't use the swift object's upload_file as it does not
 			#				accept the extra_info arguement (this could be fixed by submitting
 			#				a pull request to pyrax
 			obj = self.swift_client.upload_file(self.swift_mount, source_path, 
-					obj_name = object_name, extra_info = upload_response)
+					obj_name = object_name, headers = metadata, extra_info = upload_response)
 		else:
 			data = ""
-			obj = self.swift_mount.store_object(object_name, data, extra_info = upload_response)
-		obj.set_metadata(metadata)
+			obj = self.swift_mount.store_object(object_name, data, headers = metadata, extra_info = upload_response)
+		
 		# TODO: if we want to be really paraniod we can verify the MD5 hash of the uploaded object
 		#				this is the 'etag' value in upload_response
 		# TODO: right now our error checking consists of making sure we get a 201 http response
@@ -174,6 +176,9 @@ class SwiftWorker(multiprocessing.Process):
 		Sets the metadata for the given object.
 		Will return true iff the returned http status code is 202 (Accepted)
 		"""
+		# TODO: this can potentially fail if a large object has just been uploaded and we attempt
+		#	      to set the metadata before the object replication completes. This will need some
+		#       thought to find the best way of detecting and dealing with this situation.
 		call_response = {}
 		obj = self.swift_mount.get_object(object_name)
 		if obj:
@@ -183,6 +188,22 @@ class SwiftWorker(multiprocessing.Process):
 			return call_response['status'] == 202
 		else:
 			return False
+
+	# This function was taken from the pyrax library. We need it here, but its a private function
+	# in pyrax, so we'll just copy it incase things change in the library
+	def _massage_metakeys(self, dct, prfx):
+		"""
+		Returns a copy of the supplied dictionary, prefixing any keys that do
+		not begin with the specified prefix accordingly.
+		"""
+		lowprefix = prfx.lower()
+		ret = {}
+		for k, v in dct.iteritems():
+			if not k.lower().startswith(lowprefix):
+				k = "%s%s" % (prfx, k)
+			ret[k] = v
+		return ret
+
 
 class SwiftTask(object):
 	'''
