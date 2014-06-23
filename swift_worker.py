@@ -1,4 +1,5 @@
 from functools import wraps
+from sys import exit
 import pyrax
 import logging
 import os
@@ -122,6 +123,7 @@ class SwiftWorker(multiprocessing.Process):
 				self.logger.debug('''"worker":"%s", "message":"task successful"''', self.name)
 			else:
 				self.logger.debug('''"worker":"%s", "message":"task failed: %s"''', self.name, task_error_message)
+		exit()
 
 	@handle_client_exception
 	def download_object(self, object_name, destination_path):

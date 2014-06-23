@@ -1,4 +1,5 @@
 import logging
+import time
 import pyrax
 import os
 import multiprocessing
@@ -20,8 +21,8 @@ class SwiftSource:
 		self.task_queue = multiprocessing.JoinableQueue()
 		self.response_queue = multiprocessing.JoinableQueue()
 		# TODO: the number of workers should be a setting in the config file
-		num_workers = 20
-		self.workers = [SwiftWorker(self.task_queue, self.response_queue, auth_url, username, password, tenant_id, region_name, source_bucket) for i in xrange(num_workers)]
+		self.num_workers = 20
+		self.workers = [SwiftWorker(self.task_queue, self.response_queue, auth_url, username, password, tenant_id, region_name, source_bucket) for i in xrange(self.num_workers)]
 		for worker in self.workers:
 			worker.start()
 
@@ -88,6 +89,14 @@ class SwiftSource:
 				})
 		self.active_job_callbacks[task.job_id] = callback
 		self.task_queue.put(task)
+
+	def terminate_workers(self):
+		def callback(success, error_message):
+			pass
+		for i in range(0,self.num_workers):
+			task = SwiftTask(command = "shutdown", args = {})
+			self.active_job_callbacks[task.job_id] = callback
+			self.task_queue.put(task)
 
 	def _response_thread_main(self):
 		while True:
