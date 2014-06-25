@@ -1,10 +1,12 @@
 from functools import wraps
-from sys import exit
-import pyrax
+import hashlib
 import logging
-import os
 import multiprocessing
+import os
+import pyrax
+import pyrax.utils as utils
 from random import randint
+from sys import exit
 
 from swiftclient import client as _swift_client
 
@@ -151,23 +153,43 @@ class SwiftWorker(multiprocessing.Process):
 		then we upload the file, otherwise, we upload an empty object.
 		Will return true iff the returned http status code is 201 (Created)
 
-		NOTE: pyrax's upload_file function takes care of segmenting files if they
+		NOTE: Pyrax's upload_file function takes care of segmenting files if they
 				  exceed the max object size.
+					Pyrax also takes care of checking the md5 hash of the uploaded object.
 		"""
+		# before we do anything, lets first check to see if the object we're trying to upload
+		# exists. If it does then we check the md5 hash to see if it is the same as what we're
+		# trying to upload.
+		try:
+			existing_object = self.swift_mount.get_object(object_name)
+			if existing_object is not None:
+				# TODO: comparing checksums for objects more than max_object_size does not work
+				#				It seems like the best place to be doing this is probably in the function to store
+				#				objects in the pyrax library.... but not so sure that its worth it.
+				if not os.path.isfile(source_path):
+					local_etag = "d41d8cd98f00b204e9800998ecf8427e" # hash for empty object
+				else:
+					local_etag = utils.get_checksum(source_path)
+				if existing_object.etag == local_etag:
+					self.logger.debug('''"worker":"%s", "message":"task successful, object already exists with same md5 hash, not uploading"''', self.name)
+					return True
+				print "mismatch %s, %s" % (local_etag, existing_object.etag)
+		except Exception, e:
+			# if we get an exception here, then the object does not yet exist, so continue on
+			pass
+
 		metadata = self._massage_metakeys(metadata, self.swift_client.object_meta_prefix)
 		upload_response = {}
 		if os.path.isfile(source_path):
 			# TODO: we currently can't use the swift object's upload_file as it does not
-			#				accept the extra_info arguement (this could be fixed by submitting
-			#				a pull request to pyrax
+			#				accept the extra_info arguement. A fix is has been merged, but until
+			#       it becomes available we use the swift_client directly
 			obj = self.swift_client.upload_file(self.swift_mount, source_path, 
 					obj_name = object_name, headers = metadata, extra_info = upload_response)
 		else:
 			data = ""
-			obj = self.swift_mount.store_object(object_name, data, headers = metadata, extra_info = upload_response)
+			obj = self.swift_client.store_object(self.swift_mount, object_name, data,  headers = metadata, extra_info = upload_response)
 		
-		# TODO: if we want to be really paraniod we can verify the MD5 hash of the uploaded object
-		#				this is the 'etag' value in upload_response
 		# TODO: right now our error checking consists of making sure we get a 201 http response
 		#				this could be enough, but really this deserves more research.
 		return upload_response['status'] == 201
@@ -205,7 +227,6 @@ class SwiftWorker(multiprocessing.Process):
 				k = "%s%s" % (prfx, k)
 			ret[k] = v
 		return ret
-
 
 class SwiftTask(object):
 	'''
