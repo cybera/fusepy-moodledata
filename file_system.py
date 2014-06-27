@@ -496,10 +496,11 @@ class FileSystem(LoggingMixIn, Operations):
 
 class FileOperation:
 	"""
-	node: should be the file node object
-	operation: this is the function to be executed once there is no active job running on the node
-	operation_args: a tuple of arguments to be passed to the operation function
-	pre_execution: a function to be executed before the operation. This is where things like 'uploading' should be set
+	Parameters
+		node: should be the file node object
+		operation: this is the function to be executed once there is no active job running on the node
+		operation_args: a tuple of arguments to be passed to the operation function
+		pre_execution: a function to be executed before the operation. This is where things like 'uploading' should be set
 	"""
 	def __init__(self, path, operation, operation_args, pre_execution):
 		self.path = path
