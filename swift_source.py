@@ -62,7 +62,7 @@ class SwiftSource:
 		self.active_job_callbacks[task.job_id] = callback
 		self.task_queue.put(task)
 
-	def update_object(self, fsnode, cache_root, callback):
+	def update_object(self, fsnode, cache_root, callback, md5sum = None):
 		# TODO: Do we really need to pass the cache_root? Can it perhaps be set on the fsnode already?
 		source_path = os.path.join(cache_root, fsnode.path.lstrip("/"))
 		object_name = fsnode.path.lstrip("/")
@@ -85,7 +85,8 @@ class SwiftSource:
 				args = {
 					"object_name": object_name,
 					"source_path": source_path,
-					"metadata": metadata
+					"metadata": metadata,
+					"md5sum": md5sum
 				})
 		self.active_job_callbacks[task.job_id] = callback
 		self.task_queue.put(task)

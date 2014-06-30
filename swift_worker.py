@@ -82,9 +82,10 @@ class SwiftWorker(multiprocessing.Process):
 					object_name = task.args["object_name"]
 					source_path = task.args["source_path"]
 					metadata = task.args["metadata"] if ("metadata" in task.args.keys()) else {}
+					md5sum = task.args["md5sum"] if ("md5sum" in task.args.keys()) else None
 					self.logger.debug('''"worker":"%s", "message":"creating object '%s'"''', self.name, object_name)
 					try:
-						task_success = self.create_object(object_name, source_path, metadata)
+						task_success = self.create_object(object_name, source_path, metadata, md5sum)
 						if not task_success:
 							task_error_message = "unable to create object"
 					except Exception, e:
@@ -147,7 +148,7 @@ class SwiftWorker(multiprocessing.Process):
 		return True
 
 	@handle_client_exception
-	def create_object(self, object_name, source_path, metadata):
+	def create_object(self, object_name, source_path, metadata, md5sum = None):
 		"""
 		Creates the specified object in Swift. If the source_path points to a file
 		then we upload the file, otherwise, we upload an empty object.
@@ -169,7 +170,7 @@ class SwiftWorker(multiprocessing.Process):
 				if not os.path.isfile(source_path):
 					local_etag = "d41d8cd98f00b204e9800998ecf8427e" # hash for empty object
 				else:
-					local_etag = utils.get_checksum(source_path)
+					local_etag = utils.get_checksum(source_path) if md5sum is None else md5sum
 				if existing_object.etag == local_etag:
 					self.logger.debug('''"worker":"%s", "message":"task successful, object already exists with same md5 hash, not uploading"''', self.name)
 					return True

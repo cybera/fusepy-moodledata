@@ -1,8 +1,10 @@
 #!/usr/bin/env python
 
 # from moodledata import Moodledata
+import argparse
 from sys import argv, exit
 from file_system import FileSystem
+import json
 import logging, logging.config
 import os
 
@@ -26,7 +28,8 @@ def upload_file(base, path):
 	def callback(success, error_message):
 		pass
 	node = FSNode(base, path)
-	swift_connection.update_object(node, base, callback)
+	md5sum = manifest[path]["md5"] if path in manifest and node.mtime <= manifest[path]["mtime"] else None
+	swift_connection.update_object(node, base, callback, md5sum)
 
 class FSNode:
 	'''
@@ -72,13 +75,20 @@ class FSNode:
 
 
 if __name__ == '__main__':
-	if len(argv) == 2:
-		md_config = Config(argv[1])
-	else:
-		md_config = Config()
+	parser = argparse.ArgumentParser()
+	parser.add_argument("-m", "--file_manifest", help="The file containing md5-sum and other data")
+	parser.add_argument("-c", "--config", help="The config file to be used")
+	parser.add_argument("-u", "--upload_path", help="The path to sync the Swift container to")
+	args = parser.parse_args()
+	
+	config = Config(args.config) if args.config else Config()
 	logging.config.fileConfig('logging.conf')
 
-	config = md_config
+	file_manifest_path = args.file_manifest
+	manifest = {}
+	if file_manifest_path and os.path.isfile(file_manifest_path):
+		with open(file_manifest_path, 'r') as json_file:
+			manifest = json.load(json_file)
 
 	swift_connection = SwiftSource(
 		auth_url=config["swift.auth_url"],
@@ -89,8 +99,7 @@ if __name__ == '__main__':
 		source_bucket=config["source_bucket"])
 
 	# get directory
-	#upload_path("/usr/local/lib/python2.7", "dist-packages")
-	upload_path("/home/ubuntu/random/test", "")
+	upload_path(args.upload_path, "")
 	print "------------waiting for files to upload to swift----------------"
 	swift_connection.terminate_workers()
 	exit()

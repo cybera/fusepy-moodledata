@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 # from moodledata import Moodledata
+import argparse
 from sys import argv, exit
 import json
 import logging, logging.config
@@ -22,8 +23,6 @@ def process_path(base, path):
 	return
 
 def add_entry(base, path):
-	def callback(success, error_message):
-		pass
 	node = FSNode(base, path)
 	if path in manifest and node.mtime <= manifest[path]["mtime"]:
 		return
@@ -80,22 +79,26 @@ class FSNode:
 
 
 if __name__ == '__main__':
-	if len(argv) == 2:
-		md_config = Config(argv[1])
-	else:
-		md_config = Config()
+	parser = argparse.ArgumentParser()
+	parser.add_argument("-m", "--file_manifest", help="The file containing md5-sum and other data")
+	parser.add_argument("-c", "--config", help="The config file to be used")
+	parser.add_argument("-u", "--upload_path", help="The path to sync the Swift container to")
+	args = parser.parse_args()
+
+	
+	config = Config(args.config) if args.config else Config()
 	logging.config.fileConfig('logging.conf')
 
-	manifest_file = "/home/ubuntu/file_manifest.json"
+	file_manifest_path = args.file_manifest
+
 	manifest = {}
 
-	config = md_config
-	if os.path.isfile(manifest_file):
-		with open(manifest_file, 'r') as json_file:
+	if os.path.isfile(file_manifest_path):
+		with open(file_manifest_path, 'r') as json_file:
 			manifest = json.load(json_file)
 	# get directory
 	process_path("/usr/local/lib/python2.7", "dist-packages")
-	with open(manifest_file, 'w') as json_file:
+	with open(file_manifest_path, 'w') as json_file:
 		json_file.write(json.dumps(manifest))
 	exit()
 
