@@ -9,8 +9,8 @@ import thread
 from fuse import FuseOSError, Operations, LoggingMixIn
 
 from swift_source import SwiftSource
-
 from fsnode import FSNode
+import file_system_cache_init
 
 class FileSystem(LoggingMixIn, Operations):
 	def __init__(self, config):
@@ -19,6 +19,7 @@ class FileSystem(LoggingMixIn, Operations):
 
 		self.config = config
 		self.cache_root = os.path.realpath(config["cache_dir"])
+		file_system_cache_init.init_cache(self.cache_root)
 
 		self.swift_connection = SwiftSource(
 			auth_url=config["swift.auth_url"],
