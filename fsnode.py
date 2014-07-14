@@ -113,17 +113,17 @@ class FSNode:
 	def set_swift_connection(swift_connection):
 		FSNode._swift_connection = swift_connection
 
-	def update_from_cache(self, path, file_system):
+	def update_from_cache(self, path, cache_path):
 		# split the file name out from its parent directory
 		file_folder, file_name = FSNode._parse_folder_and_file_from_path(path)
 
-		cached_st = os.lstat(file_system.cache_path(path))
+		cached_st = os.lstat(cache_path)
 		cached_attr = dict((key, getattr(cached_st, key)) for key in ('st_atime', 'st_ctime',
 			'st_gid', 'st_mode', 'st_mtime', 'st_nlink', 'st_size', 'st_uid'))
 
 		link_source = None
-		if os.path.islink(file_system.cache_path(path)):
-			link_source = os.readlink(file_system.cache_path(path))
+		if os.path.islink(cache_path):
+			link_source = os.readlink(cache_path)
 
 		self.path = path.lstrip("/")
 		self.name = file_name
