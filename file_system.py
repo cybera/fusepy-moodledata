@@ -320,13 +320,9 @@ class FileSystem(LoggingMixIn, Operations):
 		return os.open(self.cache_path(path), flags)
 
 	def create(self, path, mode):
-<<<<<<< HEAD
 		directory = os.path.dirname(self.cache_path(path))
 		if not os.path.exists(directory):
 			os.makedirs(directory)
-=======
-		os.makedirs(os.path.dirname(self.cache_path(path)))
->>>>>>> f527577e4cac0b62b85a12e1e6f6e8d92838de63
 		fh = os.open(self.cache_path(path), os.O_WRONLY | os.O_CREAT, mode)
 
 		node = self.get(path)
