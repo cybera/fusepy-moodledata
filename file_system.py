@@ -328,7 +328,7 @@ class FileSystem(LoggingMixIn, Operations):
 		node = self.get(path)
 		if not node:
 			node = self.get_or_create(path)
-			node.update_from_cache(path, self)
+			node.update_from_cache(path, self.cache_path(path))
 
 		node.save()
 
