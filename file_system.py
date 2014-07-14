@@ -19,7 +19,6 @@ class FileSystem(LoggingMixIn, Operations):
 
 		self.config = config
 		self.cache_root = os.path.realpath(config["cache_dir"])
-		file_system_cache_init.init_cache(self.cache_root)
 
 		self.swift_connection = SwiftSource(
 			auth_url=config["swift.auth_url"],
@@ -35,9 +34,9 @@ class FileSystem(LoggingMixIn, Operations):
 		else:
 			# initialize cache
 			node = FSNode()
-			node.update_from_cache("/", self)
+			node.update_from_cache("/", self.cache_path("/"))
 			node.save()
-
+		
 		self.pending_operations = deque()
 		self.job_executor_thread = thread.start_new_thread(self._job_executor_thread_main, ())
 
@@ -81,7 +80,7 @@ class FileSystem(LoggingMixIn, Operations):
 		# TODO: Handle existing directory
 		os.mkdir(self.cache_path(path), mode)
 		node = self.get_or_create(path)
-		node.update_from_cache(path, self)
+		node.update_from_cache(path, self.cache_path(path))
 		node.save()
 
 		def callback(success, error_message):
@@ -143,6 +142,7 @@ class FileSystem(LoggingMixIn, Operations):
 			node.dirty = 1
 			node.save()
 
+		node.update_from_cache(path, self.cache_path(path))
 		# Strange things happen if you don't return the number of bytes written from this function call.
 		return retval
 
@@ -177,7 +177,7 @@ class FileSystem(LoggingMixIn, Operations):
 			node.save()
 				
 		if node and node.dirty == 1:
-			node.update_from_cache(path, self)
+			node.update_from_cache(path, self.cache_path(path))
 			node.save()
 			args = (node, self.cache_root, callback)
 			operation = FileOperation(path, self.swift_connection.update_object, args, pre_execution)
@@ -194,7 +194,7 @@ class FileSystem(LoggingMixIn, Operations):
 				
 		os.symlink(source, self.cache_path(target))
 		node = self.get_or_create(path)
-		node.update_from_cache(path, self)
+		node.update_from_cache(path, self.cache_path(path))
 		node.save()
 
 		args = (node, self.cache_root, callback)
@@ -296,7 +296,7 @@ class FileSystem(LoggingMixIn, Operations):
 
 	def truncate(self, path, length, fh=None):
 		node = self.get_or_create(path)
-		node.update_from_cache(path, self)
+		node.update_from_cache(path, self.cache_path(path))
 
 		if fh:
 			os.ftruncate(fh, length)
@@ -320,6 +320,9 @@ class FileSystem(LoggingMixIn, Operations):
 		return os.open(self.cache_path(path), flags)
 
 	def create(self, path, mode):
+		directory = os.path.dirname(self.cache_path(path))
+		if not os.path.exists(directory):
+			os.makedirs(directory)
 		fh = os.open(self.cache_path(path), os.O_WRONLY | os.O_CREAT, mode)
 
 		node = self.get(path)
@@ -448,7 +451,7 @@ class FileSystem(LoggingMixIn, Operations):
 
 		# Add the root node
 		node = FSNode()
-		node.update_from_cache("/", self)
+		node.update_from_cache("/", self.cache_path("/"))
 		node.save()
 
 		for obj in self.swift_connection.get_objects("/"):
