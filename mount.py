@@ -14,5 +14,5 @@ if __name__ == '__main__':
 	else:
 		md_config = Config()
 	logging.config.fileConfig('logging.conf')
-	fuse = FUSE(FileSystem(md_config), md_config["mount_dir"], foreground=True)
+	fuse = FUSE(FileSystem(md_config), md_config["mount_dir"], foreground=True, allow_other=True)
 

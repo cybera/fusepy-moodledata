@@ -6,7 +6,7 @@ from stat import S_IFDIR, S_IFLNK, S_IFREG
 from threading import Lock
 import thread
 
-from fuse import FuseOSError, Operations, LoggingMixIn
+from fuse import FUSE, FuseOSError, Operations, LoggingMixIn, fuse_get_context
 
 from swift_source import SwiftSource
 from fsnode import FSNode
@@ -320,10 +320,15 @@ class FileSystem(LoggingMixIn, Operations):
 		return os.open(self.cache_path(path), flags)
 
 	def create(self, path, mode):
-		directory = os.path.dirname(self.cache_path(path))
+		uid, gid, pid = fuse_get_context()
+		path_cache = self.cache_path(path)
+		directory = os.path.dirname(path_cache)
 		if not os.path.exists(directory):
 			os.makedirs(directory)
-		fh = os.open(self.cache_path(path), os.O_WRONLY | os.O_CREAT, mode)
+			os.chown(directory, uid, gid)
+
+		fh = os.open(path_cache, os.O_WRONLY | os.O_CREAT, mode)
+		os.chown(path_cache, uid, gid)
 
 		node = self.get(path)
 		if not node:
@@ -438,7 +443,9 @@ class FileSystem(LoggingMixIn, Operations):
 			os.makedirs(cache_folder_path)
 
 		# First we make sure that the file exists so other methods can open it and query the size, ect
+		uid, gid, pid = fuse_get_context()
 		open(self.cache_path(path), 'a').close()
+		os.chown(self.cache_path(path), uid, gid)
 		
 		# Now we mark the node as download in progress
 		node = self.get(path)
