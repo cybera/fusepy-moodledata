@@ -264,10 +264,13 @@ class FileSystem(LoggingMixIn, Operations):
 		# Note: This function only gets called when we're moving within the Fuse mount. If
 		# external directories are involved, different functions are called.
 		old_node = self.get(old)
+		if old_node is None:
+			return 1
+		mode = old_node.mode
 		def pre_execution():
 			pass
 		def execute():
-			self.create(new, old_node.mode)
+			self.create(new, mode)
 			new_node = self.get(new)
 			copyfile(self.cache_path(old), self.cache_path(new))
 			new_node.dirty = 1
